@@ -1,0 +1,136 @@
+(* Reference: EBNF: ISO/IEC 14977:1996(E)            *)
+(*   https://www.cl.cam.ac.uk/~mgk25/iso-14977.pdf   *)
+
+
+(*  Top level  *)
+
+module = { decl } ;
+
+decl = func-decl
+     | extern-block ;
+
+
+(*  Declarations  *)
+
+func-decl = ident , "::" , "(" , param-list , ")" , "->" , type , block-stmt ;
+
+extern-block = "extern" , "{" , extern-decl , { "," , extern-decl } , "}"
+             | "extern" , extern-decl , ";" ;
+
+extern-decl = ident , "(" , param-list , ")" , "->" , type ;
+
+param-list = (* empty *)
+           | param , { "," , param } ;
+
+param = ident , ":" , type ;
+
+
+(*  Types  *)
+
+(* Prefix letter determines type family; optional bits suffix  *)
+(* defaults to 64 when omitted.                                *)
+
+type = "void"
+     | int-type
+     | float-type ;
+
+int-type = ( "i" | "s" ) , [ bits ]   (* signed integer   *)
+         | "u" , [ bits ]             (* unsigned integer *) ;
+
+float-type = "f" , [ bits ] ;
+
+bits = digit , { digit } ;    (* any value in 0..65535 *)
+
+(*  Statements  *)
+
+stmt = block-stmt
+     | if-stmt
+     | while-stmt
+     | return-stmt
+     | expr-stmt ;
+
+block-stmt = "{" , { stmt } , "}" ;
+
+if-stmt = "if" , expr , stmt , [ "else" , stmt ] ;
+
+while-stmt = "while" , expr , stmt ;
+
+return-stmt = "return" , [ expr ] , ";" ;
+
+expr-stmt = expr , ";" ;
+
+
+(*  Expressions  (precedence low -> high, all left-associative)  *)
+
+expr = equality ;
+
+equality = relational , { equality-op , relational } ;
+
+equality-op = "==" | "!=" ;
+
+relational = additive , { relational-op , additive } ;
+
+relational-op = "<" | "<=" | ">" | ">=" ;
+
+additive = multiplicative , { additive-op , multiplicative } ;
+
+additive-op = "+" | "-" ;
+
+multiplicative = unary , { multiplicative-op , unary } ;
+
+multiplicative-op = "*" | "/" | "%" ;
+
+(* Unary is right-recursive to allow chaining: --x, +-x, etc., thought double -- or ++ will be used as a dec/inc *)
+unary = unary-op , unary
+      | primary ;
+
+unary-op = "-" | "+" ;
+
+
+(*  Primary expressions  *)
+
+primary = int-lit
+        | float-lit
+        | call
+        | ident
+        | "(" , expr , ")" ;
+
+call = ident , "(" , arg-list , ")" ;
+
+arg-list = (* empty *)
+         | expr , { "," , expr } ;
+
+
+(*  Literals  *)
+
+int-lit = digits , [ int-suffix ] ;
+
+int-suffix = "u" , digits    (* unsigned, e.g. 42u8  *)
+           | "i" , digits ;  (* signed,   e.g. 42i32 *)
+
+float-lit = digits , "." , digits , [ float-suffix ] ;
+
+float-suffix = "f" , digits ;  (* e.g. 3.14f32 *)
+
+digits = digit , { digit } ;
+
+digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+
+ident = letter , { letter | digit | "_" } ;
+
+letter = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i"
+       | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r"
+       | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z"
+       | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I"
+       | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R"
+       | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" ;
+
+
+(*  Reserved words  (may not be used as ident)  *)
+
+(* "if"     - if-stmt keyword                                  *)
+(* "else"   - else branch keyword                              *)
+(* "while"  - while-stmt keyword                               *)
+(* "return" - return-stmt keyword                              *)
+(* "extern" - extern declaration keyword                       *)
+(* "void"   - type keyword                                     *)
