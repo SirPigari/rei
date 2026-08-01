@@ -31,8 +31,6 @@ void diag_emit(DiagLevel level, Location loc, const char* fmt, ...) {
 }
 
 void diag_ice(const char* file, int line, const char* msg) {
-    fprintf(stderr, "%s:%d: Internal Compiler Error (ICE):\n%s\n", file, line, msg);
-    fprintf(stderr, "Backtrace:\n");
     void* frames[64];
     int   n = backtrace(frames, 64);
 
@@ -44,5 +42,7 @@ void diag_ice(const char* file, int line, const char* msg) {
         fprintf(stderr, "    %s\n", symbols[i]);
 
     free(symbols);
+    fprintf(stderr, "^^^ Backtrace\n");
+    fprintf(stderr, "%s:%d: Internal Compiler Error (ICE):\n%s\n", file, line, msg);
     exit(128);
 }

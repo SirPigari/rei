@@ -1,18 +1,6 @@
-/* since there are no pointers yet */
-extern putchar(c: i32) -> i32;
+extern puts(s: *u8) -> i32;
 
 main :: () -> i32 {
-    putchar('H');
-    putchar('e');
-    putchar('l');
-    putchar('l');
-    putchar('o');
-    putchar(' ');
-    putchar('W');
-    putchar('o');
-    putchar('r');
-    putchar('l');
-    putchar('d');
-    putchar(10);
+    puts(c"Hello world"); /* puts adds the newline for us */
     return 0;
 }

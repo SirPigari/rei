@@ -7,12 +7,18 @@
 module = { decl } ;
 
 decl = func-decl
-     | extern-block ;
+     | extern-block
+     | var-decl
+     | const-decl ;
 
 
 (*  Declarations  *)
 
 func-decl = ident , "::" , "(" , param-list , ")" , "->" , type , block-stmt ;
+
+var-decl = ident , ":" , type , [ "=" , expr ] , ";" ;
+
+const-decl = ident , "::" , type , [ "=" , expr ] , ";" ;
 
 extern-block = "extern" , "{" , extern-decl , { "," , extern-decl } , "}"
              | "extern" , extern-decl , ";" ;
@@ -47,6 +53,9 @@ stmt = block-stmt
      | if-stmt
      | while-stmt
      | return-stmt
+     | var-decl
+     | const-decl
+     | var-assign
      | expr-stmt ;
 
 block-stmt = "{" , { stmt } , "}" ;
@@ -57,40 +66,71 @@ while-stmt = "while" , expr , stmt ;
 
 return-stmt = "return" , [ expr ] , ";" ;
 
+var-decl = ident , ":" , type , [ "=" , expr ] , ";" ;
+
+const-decl = ident , "::" , type , [ "=" , expr ] , ";" ;
+
+var-assign = ident , assign-op , expr , ";" ;
+
+assign-op = "=" | "+=" | "-=" | "*=" | "/=" | "%="
+          | "&=" | "|=" | "^=" | "~=" | "<<=" | ">>="
+          | "**=" | "&&=" | "||=" ;
+
 expr-stmt = expr , ";" ;
 
 
 (*  Expressions  (precedence low -> high, all left-associative)  *)
 
-expr = equality ;
+expr = logical-or ;
+
+logical-or = logical-and , { "||" , logical-and } ;
+
+logical-and = bitwise-or , { "&&" , bitwise-or } ;
+
+bitwise-or = bitwise-xor , { "|" , bitwise-xor } ;
+
+bitwise-xor = bitwise-and , { "^" , bitwise-and } ;
+
+bitwise-and = equality , { "&" , equality } ;
 
 equality = relational , { equality-op , relational } ;
 
 equality-op = "==" | "!=" ;
 
-relational = additive , { relational-op , additive } ;
+relational = shift , { relational-op , shift } ;
 
 relational-op = "<" | "<=" | ">" | ">=" ;
+
+shift = additive , { shift-op , additive } ;
+
+shift-op = "<<" | ">>" ;
 
 additive = multiplicative , { additive-op , multiplicative } ;
 
 additive-op = "+" | "-" ;
 
-multiplicative = unary , { multiplicative-op , unary } ;
+multiplicative = power , { multiplicative-op , power } ;
 
 multiplicative-op = "*" | "/" | "%" ;
 
-(* Unary is right-recursive to allow chaining: --x, +-x, etc., thought double -- or ++ will be used as a dec/inc *)
-unary = unary-op , unary
-      | primary ;
+power = unary , { "**" , unary } ;
 
-unary-op = "-" | "+" ;
+(* Unary is right-recursive to allow chaining: --x, +-x, etc. *)
+unary = unary-op , unary
+      | postfix ;
+
+unary-op = "-" | "+" | "!" | "~" | "&" | "*" | "++" | "--" ;
+
+postfix = primary , [ postfix-op ] ;
+
+postfix-op = "++" | "--" ;
 
 
 (*  Primary expressions  *)
 
 primary = int-lit
         | float-lit
+        | str-lit
         | call
         | ident
         | "(" , expr , ")" ;
@@ -115,6 +155,10 @@ float-suffix = "f" , digits ;  (* e.g. 3.14f32 *)
 digits = digit , { digit } ;
 
 digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+
+str-lit = { str-prefix } , "\"" , { character } , "\"" ;
+
+str-prefix = "c" | "b" | "r" | "m" ;  (* c=cstr, b=bytes, r=raw, m=multiline *)
 
 ident = letter , { letter | digit | "_" } ;
 

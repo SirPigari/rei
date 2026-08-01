@@ -3,10 +3,10 @@
 #define NOB_NO_ECHO
 #include "./thirdparty/nob.h"
 
-#define SOURCE "./source/"
+#define SOURCE  "./source/"
 #define CODEGEN "./source/codegen/"
-#define BUILD  "./build/"
-#define OUTPUT "./rei"
+#define BUILD   "./build/"
+#define OUTPUT  "./rei"
 
 typedef struct {
     const char* file;

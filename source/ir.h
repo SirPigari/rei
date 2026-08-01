@@ -15,6 +15,12 @@ typedef enum {
     IR_JMP,         /* unconditional jump */
     IR_JMP_IF,      /* conditional jump if src != 0 */
     IR_LABEL,       /* label for jumps */
+    IR_ALLOCA,      /* v = alloca(type)  -- yields *T, stack slot address */
+    IR_LOAD,        /* v = *src          -- load from pointer */
+    IR_STORE,       /* *dst_ptr = src    -- store through pointer (no dst val) */
+    IR_STRING,      /* v = &rodata[str_idx]  -- pointer to string literal */
+    IR_GEP,         /* v = base_ptr + idx*elem_size  -- get element pointer */
+    IR_ARRAY_INIT,  /* v = alloca([T;N]) -- stack array, elements filled by IR_STOREs */
 } IrOpcode;
 
 typedef struct {
@@ -40,6 +46,20 @@ typedef struct {
             UnOp  uop;
             IrVal usrc;
         };
+        struct {
+            IrVal store_ptr;
+            IrVal store_val;
+        };
+        struct {
+            IrVal load_ptr;
+        };
+        struct {
+            IrVal gep_base;
+            IrVal gep_idx;
+            int   gep_scale;
+        };
+        int str_idx;
+        int alloca_slots;
     };
 } IrInstr;
 
@@ -60,6 +80,13 @@ typedef struct {
     IrFunc** funcs;
     int      count;
     int      cap;
+    struct IrStringEntry {
+        char*          data;
+        size_t         len;
+        StrPrefixFlags str_flags;
+    }* strings;
+    int str_count;
+    int str_cap;
 } IrModule;
 
 IrModule* ir_lower(Module* ast);
