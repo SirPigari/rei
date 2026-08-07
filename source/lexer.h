@@ -28,6 +28,7 @@ typedef enum {
     TK_IF,
     TK_ELSE,
     TK_WHILE,
+    TK_AS,
 
     /* punctuation */
     TK_LPAREN,     /* (   */
@@ -41,6 +42,9 @@ typedef enum {
     TK_DCOLON,     /* ::  */
     TK_LBRACKET,   /* [   */
     TK_RBRACKET,   /* ]   */
+    TK_DOT,        /* .   */
+    TK_DOTDOT,     /* ..  */
+    TK_QUESTION,   /* ?   */
     TK_PLUS,       /* +   */
     TK_MINUS,      /* -   */
 
@@ -93,7 +97,7 @@ typedef struct {
         long long ival;
         double    fval;
         struct {
-            char*          str; /* heap-allocated, decoded content */
+            char*          str;     /* heap-allocated, decoded content */
             size_t         str_len; /* byte length, NOT including null terminator */
             StrPrefixFlags str_flags;
         };
@@ -103,9 +107,11 @@ typedef struct {
 
 typedef struct Lexer Lexer;
 
-Lexer* lexer_new(const char* src, const char* filename);
-void   lexer_free(Lexer* l);
-Token  lexer_next(Lexer* l);
-Token  lexer_peek(Lexer* l);
+Lexer*      lexer_new(const char* src, const char* filename);
+void        lexer_free(Lexer* l);
+Token       lexer_next(Lexer* l);
+Token       lexer_peek(Lexer* l);
+void        lexer_put_back(Lexer* l, Token t);
+const char* lexer_filename(Lexer* l);
 
 const char* token_kind_str(TokenKind k);

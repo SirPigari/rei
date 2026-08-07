@@ -14,6 +14,8 @@ struct Lexer {
     int         line, col;
     int         has_peek;
     Token       peek_tok;
+    int         has_putback;
+    Token       putback_tok;
 };
 
 Lexer* lexer_new(const char* src, const char* filename) {
@@ -27,6 +29,15 @@ Lexer* lexer_new(const char* src, const char* filename) {
 
 void lexer_free(Lexer* l) {
     free(l);
+}
+
+const char* lexer_filename(Lexer* l) {
+    return l ? l->filename : NULL;
+}
+
+void lexer_put_back(Lexer* l, Token t) {
+    l->has_putback = 1;
+    l->putback_tok = t;
 }
 
 static Location loc_here(Lexer* l) {
@@ -156,14 +167,29 @@ static Token lex_number(Lexer* l) {
     Location    loc      = loc_here(l);
     const char* start    = l->cur;
     bool        is_float = false;
+    int         base     = 10;
 
-    while (isdigit((unsigned char)*l->cur))
+    if (*l->cur == '0' && (*(l->cur + 1) == 'x' || *(l->cur + 1) == 'X')) {
+        base = 16;
         advance(l);
-    if (*l->cur == '.') {
-        is_float = true;
         advance(l);
+        while (isxdigit((unsigned char)*l->cur))
+            advance(l);
+    } else if (*l->cur == '0' && (*(l->cur + 1) == 'b' || *(l->cur + 1) == 'B')) {
+        base = 2;
+        advance(l);
+        advance(l);
+        while (*l->cur == '0' || *l->cur == '1')
+            advance(l);
+    } else {
         while (isdigit((unsigned char)*l->cur))
             advance(l);
+        if (*l->cur == '.') {
+            is_float = true;
+            advance(l);
+            while (isdigit((unsigned char)*l->cur))
+                advance(l);
+        }
     }
 
     char suffix[16] = {0};
@@ -185,7 +211,7 @@ static Token lex_number(Lexer* l) {
         t.fval = atof(buf);
     } else {
         t.kind = TK_INT_LIT;
-        t.ival = strtoll(start, NULL, 10);
+        t.ival = strtoll(start, NULL, base);
     }
     return t;
 }
@@ -199,7 +225,8 @@ static int encode_utf8(uint32_t cp, char* buf) {
         buf[1] = (char)(0x80 | (cp & 0x3F));
         return 2;
     } else if (cp <= 0xFFFF) {
-        if (cp >= 0xD800 && cp <= 0xDFFF) return 0;
+        if (cp >= 0xD800 && cp <= 0xDFFF)
+            return 0;
         buf[0] = (char)(0xE0 | (cp >> 12));
         buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
         buf[2] = (char)(0x80 | (cp & 0x3F));
@@ -215,32 +242,35 @@ static int encode_utf8(uint32_t cp, char* buf) {
 }
 
 static int hex_digit(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
     return -1;
 }
 
-#define STR_PUSH(byte)                              \
-    do {                                            \
-        if (used + 1 >= cap) {                      \
-            cap *= 2;                               \
-            buf = realloc(buf, cap);                \
-        }                                           \
-        buf[used++] = (char)(byte);                 \
+#define STR_PUSH(byte)               \
+    do {                             \
+        if (used + 1 >= cap) {       \
+            cap *= 2;                \
+            buf = realloc(buf, cap); \
+        }                            \
+        buf[used++] = (char)(byte);  \
     } while (0)
 
-#define STR_PUSH_UTF8(cp)                           \
-    do {                                            \
-        char _u[4];                                 \
-        int  _n = encode_utf8((uint32_t)(cp), _u);  \
-        if (_n == 0) {                              \
-            diag_emit(DIAG_ERROR, loc,              \
-                      "invalid Unicode codepoint U+%04X", (unsigned)(cp)); \
-            _n = 1; _u[0] = '?';                   \
-        }                                           \
-        for (int _i = 0; _i < _n; _i++)            \
-            STR_PUSH(_u[_i]);                       \
+#define STR_PUSH_UTF8(cp)                                                                   \
+    do {                                                                                    \
+        char _u[4];                                                                         \
+        int  _n = encode_utf8((uint32_t)(cp), _u);                                          \
+        if (_n == 0) {                                                                      \
+            diag_emit(DIAG_ERROR, loc, "invalid Unicode codepoint U+%04X", (unsigned)(cp)); \
+            _n    = 1;                                                                      \
+            _u[0] = '?';                                                                    \
+        }                                                                                   \
+        for (int _i = 0; _i < _n; _i++)                                                     \
+            STR_PUSH(_u[_i]);                                                               \
     } while (0)
 
 static Token lex_string(Lexer* l, int flags, Location loc) {
@@ -256,13 +286,13 @@ static Token lex_string(Lexer* l, int flags, Location loc) {
     if (is_multiline && *l->cur == '\n') {
         advance(l);
     } else if (is_multiline && l->cur[0] == '\r' && l->cur[1] == '\n') {
-        advance(l); advance(l);
+        advance(l);
+        advance(l);
     }
 
     while (*l->cur && *l->cur != '"') {
         if (!is_multiline && (*l->cur == '\n' || *l->cur == '\r')) {
-            diag_emit(DIAG_ERROR, loc,
-                      "unterminated string literal (use m\"...\" for multiline)");
+            diag_emit(DIAG_ERROR, loc, "unterminated string literal (use m\"...\" for multiline)");
             break;
         }
 
@@ -283,18 +313,42 @@ static Token lex_string(Lexer* l, int flags, Location loc) {
         }
         char esc = advance(l);
         switch (esc) {
-            case 'n':  STR_PUSH('\n'); break;
-            case 'r':  STR_PUSH('\r'); break;
-            case 't':  STR_PUSH('\t'); break;
-            case '\\': STR_PUSH('\\'); break;
-            case '"':  STR_PUSH('"');  break;
-            case '\'': STR_PUSH('\''); break;
-            case '0':  STR_PUSH('\0'); break;
-            case 'a':  STR_PUSH('\a'); break;
-            case 'b':  STR_PUSH('\b'); break;
-            case 'f':  STR_PUSH('\f'); break;
-            case 'v':  STR_PUSH('\v'); break;
-            case 'e':  STR_PUSH(0x1B); break; /* ESC */
+            case 'n':
+                STR_PUSH('\n');
+                break;
+            case 'r':
+                STR_PUSH('\r');
+                break;
+            case 't':
+                STR_PUSH('\t');
+                break;
+            case '\\':
+                STR_PUSH('\\');
+                break;
+            case '"':
+                STR_PUSH('"');
+                break;
+            case '\'':
+                STR_PUSH('\'');
+                break;
+            case '0':
+                STR_PUSH('\0');
+                break;
+            case 'a':
+                STR_PUSH('\a');
+                break;
+            case 'b':
+                STR_PUSH('\b');
+                break;
+            case 'f':
+                STR_PUSH('\f');
+                break;
+            case 'v':
+                STR_PUSH('\v');
+                break;
+            case 'e':
+                STR_PUSH(0x1B);
+                break; /* ESC */
 
             case 'x': {
                 int hi = hex_digit(*l->cur);
@@ -322,24 +376,24 @@ static Token lex_string(Lexer* l, int flags, Location loc) {
                     while (*l->cur && *l->cur != '}') {
                         int d = hex_digit(*l->cur);
                         if (d < 0) {
-                            diag_emit(DIAG_ERROR, loc,
-                                      "invalid character in \\u{...} escape");
+                            diag_emit(DIAG_ERROR, loc, "invalid character in \\u{...} escape");
                             break;
                         }
                         cp = (cp << 4) | (uint32_t)d;
                         advance(l);
                         digits++;
                     }
-                    if (*l->cur == '}') advance(l);
-                    else diag_emit(DIAG_ERROR, loc, "unclosed \\u{...} escape");
+                    if (*l->cur == '}')
+                        advance(l);
+                    else
+                        diag_emit(DIAG_ERROR, loc, "unclosed \\u{...} escape");
                     if (digits == 0)
                         diag_emit(DIAG_ERROR, loc, "empty \\u{} escape");
                 } else {
                     for (int i = 0; i < 4; i++) {
                         int d = hex_digit(*l->cur);
                         if (d < 0) {
-                            diag_emit(DIAG_ERROR, loc,
-                                      "\\uHHHH escape requires exactly 4 hex digits");
+                            diag_emit(DIAG_ERROR, loc, "\\uHHHH escape requires exactly 4 hex digits");
                             break;
                         }
                         cp = (cp << 4) | (uint32_t)d;
@@ -359,22 +413,22 @@ static Token lex_string(Lexer* l, int flags, Location loc) {
                     while (*l->cur && *l->cur != '}') {
                         int d = hex_digit(*l->cur);
                         if (d < 0) {
-                            diag_emit(DIAG_ERROR, loc,
-                                      "invalid character in \\U{...} escape");
+                            diag_emit(DIAG_ERROR, loc, "invalid character in \\U{...} escape");
                             break;
                         }
                         cp = (cp << 4) | (uint32_t)d;
                         advance(l);
                         digits++;
                     }
-                    if (*l->cur == '}') advance(l);
-                    else diag_emit(DIAG_ERROR, loc, "unclosed \\U{...} escape");
+                    if (*l->cur == '}')
+                        advance(l);
+                    else
+                        diag_emit(DIAG_ERROR, loc, "unclosed \\U{...} escape");
                 } else {
                     for (int i = 0; i < 8; i++) {
                         int d = hex_digit(*l->cur);
                         if (d < 0) {
-                            diag_emit(DIAG_ERROR, loc,
-                                      "\\UHHHHHHHH escape requires exactly 8 hex digits");
+                            diag_emit(DIAG_ERROR, loc, "\\UHHHHHHHH escape requires exactly 8 hex digits");
                             break;
                         }
                         cp = (cp << 4) | (uint32_t)d;
@@ -399,13 +453,13 @@ static Token lex_string(Lexer* l, int flags, Location loc) {
 
     STR_PUSH('\0');
 
-    Token t    = {0};
-    t.kind     = TK_STRING_LIT;
-    t.loc      = loc;
-    t.start    = raw_start;
-    t.len      = (size_t)(l->cur - raw_start);
-    t.str      = buf;
-    t.str_len  = used - 1;
+    Token t     = {0};
+    t.kind      = TK_STRING_LIT;
+    t.loc       = loc;
+    t.start     = raw_start;
+    t.len       = (size_t)(l->cur - raw_start);
+    t.str       = buf;
+    t.str_len   = used - 1;
     t.str_flags = flags;
     return t;
 }
@@ -436,6 +490,14 @@ static Token lex_one(Lexer* l) {
             return make_tok(l, TK_LBRACKET, loc, start);
         case ']':
             return make_tok(l, TK_RBRACKET, loc, start);
+        case '.':
+            if (*l->cur == '.') {
+                advance(l);
+                return make_tok(l, TK_DOTDOT, loc, start);
+            }
+            return make_tok(l, TK_DOT, loc, start);
+        case '?':
+            return make_tok(l, TK_QUESTION, loc, start);
         case ':':
             if (*l->cur == ':') {
                 advance(l);
@@ -603,22 +665,33 @@ static Token lex_one(Lexer* l) {
         size_t word_len = (size_t)(l->cur - start);
 
         if (*l->cur == '"' && word_len >= 1 && word_len <= 3) {
-            int    flags = 0;
-            bool   valid = true;
-            int    type_count = 0;
+            int  flags      = 0;
+            bool valid      = true;
+            int  type_count = 0;
             for (size_t i = 0; i < word_len; i++) {
                 switch (start[i]) {
-                    case 'c': flags |= STR_PREFIX_C; type_count++; break;
-                    case 'b': flags |= STR_PREFIX_B; type_count++; break;
-                    case 'r': flags |= STR_PREFIX_R; break;
-                    case 'm': flags |= STR_PREFIX_M; break;
-                    default:  valid = false; break;
+                    case 'c':
+                        flags |= STR_PREFIX_C;
+                        type_count++;
+                        break;
+                    case 'b':
+                        flags |= STR_PREFIX_B;
+                        type_count++;
+                        break;
+                    case 'r':
+                        flags |= STR_PREFIX_R;
+                        break;
+                    case 'm':
+                        flags |= STR_PREFIX_M;
+                        break;
+                    default:
+                        valid = false;
+                        break;
                 }
             }
             if (valid && type_count <= 1 && flags != 0) {
                 if ((flags & STR_PREFIX_C) && (flags & STR_PREFIX_B)) {
-                    diag_emit(DIAG_ERROR, loc,
-                              "string prefix cannot combine 'c' and 'b'");
+                    diag_emit(DIAG_ERROR, loc, "string prefix cannot combine 'c' and 'b'");
                     flags &= ~STR_PREFIX_B;
                 }
                 return lex_string(l, flags, loc);
@@ -636,6 +709,8 @@ static Token lex_one(Lexer* l) {
             t.kind = TK_ELSE;
         else if (t.len == 5 && memcmp(start, "while", 5) == 0)
             t.kind = TK_WHILE;
+        else if (t.len == 2 && memcmp(start, "as", 2) == 0)
+            t.kind = TK_AS;
         return t;
     }
 
@@ -644,6 +719,10 @@ static Token lex_one(Lexer* l) {
 }
 
 Token lexer_next(Lexer* l) {
+    if (l->has_putback) {
+        l->has_putback = 0;
+        return l->putback_tok;
+    }
     if (l->has_peek) {
         l->has_peek = 0;
         return l->peek_tok;
@@ -652,6 +731,9 @@ Token lexer_next(Lexer* l) {
 }
 
 Token lexer_peek(Lexer* l) {
+    if (l->has_putback) {
+        return l->putback_tok;
+    }
     if (!l->has_peek) {
         l->peek_tok = lex_one(l);
         l->has_peek = 1;
@@ -681,6 +763,8 @@ const char* token_kind_str(TokenKind k) {
             return "'else'";
         case TK_WHILE:
             return "'while'";
+        case TK_AS:
+            return "'as'";
         case TK_LPAREN:
             return "'('";
         case TK_RPAREN:
@@ -703,6 +787,12 @@ const char* token_kind_str(TokenKind k) {
             return "'['";
         case TK_RBRACKET:
             return "']'";
+        case TK_DOT:
+            return "'.'";
+        case TK_DOTDOT:
+            return "'..'";
+        case TK_QUESTION:
+            return "'?'";
         case TK_PLUS:
             return "'+'";
         case TK_MINUS:

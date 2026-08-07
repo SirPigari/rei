@@ -1,15 +1,34 @@
 #include "ast.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
 
 Type* type_number(TypeKind k, uint16_t bits, bool is_unsigned) {
-    Type* t        = calloc(1, sizeof(*t));
-    t->kind        = k;
-    t->bits        = bits;
+    Type* t                 = calloc(1, sizeof(*t));
+    t->kind                 = k;
+    t->bits                 = bits;
     t->int_type.is_unsigned = is_unsigned;
+    return t;
+}
+
+Type* type_number_with_flag(TypeKind k, uint16_t bits, bool is_unsigned, bool is_abstract, bool is_size) {
+    Type* t                 = calloc(1, sizeof(*t));
+    t->kind                 = k;
+    t->bits                 = bits;
+    t->int_type.is_unsigned = is_unsigned;
+    t->int_type.is_abstract = is_abstract;
+    t->int_type.is_size     = is_size;
+    return t;
+}
+
+Type* type_abstract_int(void) {
+    Type* t                 = calloc(1, sizeof(*t));
+    t->kind                 = TYPE_INT;
+    t->bits                 = 0;
+    t->int_type.is_abstract = true;
+    t->int_type.is_unsigned = false;
     return t;
 }
 
@@ -20,18 +39,18 @@ Type* type_void(void) {
 }
 
 Type* type_ptr(Type* elem, bool is_fat) {
-    Type* t            = calloc(1, sizeof(*t));
-    t->kind            = TYPE_PTR;
-    t->ptr_type.is_fat = is_fat;
+    Type* t               = calloc(1, sizeof(*t));
+    t->kind               = TYPE_PTR;
+    t->ptr_type.is_fat    = is_fat;
     t->ptr_type.elem_type = elem;
     return t;
 }
 
 Type* type_array(Type* elem, size_t len) {
-    Type* t               = calloc(1, sizeof(*t));
-    t->kind               = TYPE_ARRAY;
+    Type* t                 = calloc(1, sizeof(*t));
+    t->kind                 = TYPE_ARRAY;
     t->array_type.elem_type = elem;
-    t->array_type.len     = len;
+    t->array_type.len       = len;
     return t;
 }
 
@@ -42,38 +61,60 @@ AstNode* ast_node(AstKind kind, Location loc) {
     return n;
 }
 
-static void print_type(Type* t) {
+void type_to_string(Type* t, char* buf, size_t buf_size) {
     if (!t) {
-        printf("?");
+        snprintf(buf, buf_size, "?");
         return;
     }
     switch (t->kind) {
         case TYPE_VOID:
-            printf("void");
+            snprintf(buf, buf_size, "void");
             return;
         case TYPE_INT:
-            printf("%s%d", t->int_type.is_unsigned ? "u" : "i", t->bits ? t->bits : 64);
+            snprintf(buf, buf_size, "%s%d", t->int_type.is_unsigned ? "u" : "i", t->bits ? t->bits : 64);
             return;
         case TYPE_FLOAT:
-            printf("f%d", t->bits ? t->bits : 64);
+            snprintf(buf, buf_size, "f%d", t->bits ? t->bits : 64);
             return;
         case TYPE_PTR:
             if (t->ptr_type.is_fat)
-                printf("[]");
+                snprintf(buf, buf_size, "[]");
             else
-                printf("*");
-            print_type(t->ptr_type.elem_type);
+                snprintf(buf, buf_size, "*");
+            type_to_string(t->ptr_type.elem_type, buf + strlen(buf), buf_size - strlen(buf));
             return;
         case TYPE_ARRAY:
-            printf("[");
-            print_type(t->array_type.elem_type);
+            snprintf(buf, buf_size, "[");
+            type_to_string(t->array_type.elem_type, buf + strlen(buf), buf_size - strlen(buf));
             if (t->array_type.len)
-                printf("; %zu", t->array_type.len);
-            printf("]");
+                snprintf(buf + strlen(buf), buf_size - strlen(buf), "; %zu", t->array_type.len);
+            snprintf(buf + strlen(buf), buf_size - strlen(buf), "]");
             return;
         case TYPE_UNSUPPORTED:
-            printf("<unsupported>");
+            snprintf(buf, buf_size, "<unsupported>");
             return;
+    }
+}
+
+static void print_type(Type* t) {
+    char buf[64];
+    type_to_string(t, buf, sizeof(buf));
+    printf("%s", buf);
+}
+
+int type_bytes(Type* t) {
+    if (!t)
+        return 8;
+    switch (t->kind) {
+        case TYPE_INT:
+        case TYPE_FLOAT:
+            return t->bits ? (t->bits / 8) : 8;
+        case TYPE_PTR:
+            return t->ptr_type.is_fat ? 16 : 8;
+        case TYPE_ARRAY:
+            return 8;
+        default:
+            return 8;
     }
 }
 
@@ -165,19 +206,29 @@ static void dump_expr(AstNode* n, int ind) {
             printf("%s", n->ident);
             break;
         case AST_STRING_LIT: {
-            if (n->str_flags & STR_PREFIX_C) printf("c");
-            else if (n->str_flags & STR_PREFIX_B) printf("b");
-            if (n->str_flags & STR_PREFIX_R) printf("r");
-            if (n->str_flags & STR_PREFIX_M) printf("m");
+            if (n->str_flags & STR_PREFIX_C)
+                printf("c");
+            else if (n->str_flags & STR_PREFIX_B)
+                printf("b");
+            if (n->str_flags & STR_PREFIX_R)
+                printf("r");
+            if (n->str_flags & STR_PREFIX_M)
+                printf("m");
             printf("\"");
             for (size_t i = 0; i < n->len; i++) {
                 unsigned char ch = (unsigned char)n->str[i];
-                if      (ch == '"')  printf("\\\"");
-                else if (ch == '\\') printf("\\\\");
-                else if (ch == '\n') printf("\\n");
-                else if (ch == '\r') printf("\\r");
-                else if (ch == '\t') printf("\\t");
-                else if (ch == '\0') printf("\\0");
+                if (ch == '"')
+                    printf("\\\"");
+                else if (ch == '\\')
+                    printf("\\\\");
+                else if (ch == '\n')
+                    printf("\\n");
+                else if (ch == '\r')
+                    printf("\\r");
+                else if (ch == '\t')
+                    printf("\\t");
+                else if (ch == '\0')
+                    printf("\\0");
                 else if (ch < 0x20 || ch == 0x7F)
                     printf("\\x%02x", ch);
                 else
@@ -189,7 +240,8 @@ static void dump_expr(AstNode* n, int ind) {
         case AST_ARRAY_LIT:
             printf("[");
             for (size_t i = 0; i < n->element_count; i++) {
-                if (i) printf(", ");
+                if (i)
+                    printf(", ");
                 dump_expr(n->elements[i], ind);
             }
             printf("]");
@@ -214,6 +266,16 @@ static void dump_expr(AstNode* n, int ind) {
             printf("(%s", unop_str(n->uop));
             dump_expr(n->operand, ind);
             printf(")");
+            break;
+        case AST_INDEX:
+            dump_expr(n->array, ind);
+            printf("[");
+            dump_expr(n->index, ind);
+            printf("]");
+            break;
+        case AST_MEMBER:
+            dump_expr(n->member_value, ind);
+            printf(".%s", n->member_name);
             break;
         default:
             printf("?expr(%d)", n->kind);
@@ -303,6 +365,62 @@ static void dump_stmt(AstNode* s, int ind) {
             }
             printf(";\n");
             break;
+        case AST_INDEX_ASSIGN: {
+            dump_expr(s->idx_array, ind);
+            printf("[");
+            dump_expr(s->idx_index, ind);
+            printf("] ");
+            switch (s->idx_assign_op) {
+                case ASSIGN_EQ:
+                    printf("= ");
+                    break;
+                case ASSIGN_ADDEQ:
+                    printf("+= ");
+                    break;
+                case ASSIGN_SUBEQ:
+                    printf("-= ");
+                    break;
+                case ASSIGN_MULEQ:
+                    printf("*= ");
+                    break;
+                case ASSIGN_DIVEQ:
+                    printf("/= ");
+                    break;
+                case ASSIGN_MODEQ:
+                    printf("%%=");
+                    break;
+                case ASSIGN_BITANDEQ:
+                    printf("&= ");
+                    break;
+                case ASSIGN_BITOREQ:
+                    printf("|= ");
+                    break;
+                case ASSIGN_BITXOREQ:
+                    printf("^= ");
+                    break;
+                case ASSIGN_SHLEQ:
+                    printf("<<= ");
+                    break;
+                case ASSIGN_SHREQ:
+                    printf(">>= ");
+                    break;
+                case ASSIGN_POWEQ:
+                    printf("**= ");
+                    break;
+                case ASSIGN_LANDEQ:
+                    printf("&&= ");
+                    break;
+                case ASSIGN_LOREQ:
+                    printf("||= ");
+                    break;
+                default:
+                    printf("? ");
+                    break;
+            }
+            dump_expr(s->idx_assign_value, ind);
+            printf(";\n");
+            break;
+        }
         default:
             printf("?stmt(%d)\n", s->kind);
             break;

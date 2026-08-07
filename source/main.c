@@ -46,23 +46,24 @@ static void usage(FILE* stream, const char* argv0) {
             "Options:\n"
             "  -o <file>          output file\n"
             "  -t <target>        codegen target (default: x86_64-linux)\n"
+            "  -c                 compile only, produce .o object file (implies --lib)\n"
+            "  -S                 produce assembly file only\n"
+            "  --lib              produce .so shared library\n"
+            "  --static-lib       produce .a static library\n"
             "  --dump-ast         print AST and stop\n"
             "  --dump-ir          print IR and stop\n"
+            "  --dump-asm         print generated assembly\n"
             "  --run, -r          run compiled output\n"
+            "  --no-rei-main      treat main as C main instead of rei__main\n"
+            "  --no-main          skip main function checking\n"
             "  --help, -h         show this message\n",
             argv0);
     exit(1);
 }
 
-static void default_output_path(const char* src_path, char* out, size_t size) {
+static void default_output_path(const char* src_path, char* out, size_t size, const char* ext) {
     const char* dot = strrchr(src_path, '.');
     size_t      len = dot ? (size_t)(dot - src_path) : strlen(src_path);
-
-#ifdef _WIN32
-    const char* ext = ".exe";
-#else
-    const char* ext = "";
-#endif
 
     if (len + strlen(ext) + 1 >= size)
         exit(1);
@@ -79,6 +80,59 @@ static bool make_tmp_dir(char* tmp, size_t size) {
     snprintf(tmp, size, "/tmp/rei-XXXXXX");
 
     return mkdtemp(tmp) != NULL;
+}
+
+bool copy_file(const char* src, const char* dst) {
+    FILE* in = fopen(src, "rb");
+    if (!in)
+        return false;
+
+    FILE* out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        return false;
+    }
+
+    char   buf[8192];
+    size_t n;
+
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            fclose(in);
+            fclose(out);
+            return false;
+        }
+    }
+
+    bool ok = feof(in);
+
+    fclose(in);
+    fclose(out);
+
+    return ok;
+}
+
+static bool get_file_size(const char* path, size_t* out_size, size_t* out_lines) {
+    FILE* f = fopen(path, "rb");
+    if (!f)
+        return false;
+
+    size_t size  = 0;
+    size_t lines = 0;
+    int    c;
+    while ((c = fgetc(f)) != EOF) {
+        size++;
+        if (c == '\n')
+            lines++;
+    }
+
+    if (out_size)
+        *out_size = size;
+    if (out_lines)
+        *out_lines = lines;
+
+    fclose(f);
+    return true;
 }
 
 static bool make_abs_path(const char* path, char* out, size_t size) {
@@ -111,16 +165,33 @@ int main(int argc, char** argv) {
     const char* out_path    = NULL;
     const char* target_name = "x86_64-linux";
 
-    bool dump_ast = false;
-    bool dump_ir  = false;
-    bool dump_asm = false;
-    bool run      = false;
+    bool dump_ast     = false;
+    bool dump_ir      = false;
+    bool dump_asm     = false;
+    bool run          = false;
+    bool compile_only = false;
+    bool asm_only     = false;
+    bool make_lib     = false;
+    bool make_static  = false;
+    bool no_rei_main  = false;
+    bool no_main      = false;
+    bool no_libm      = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             out_path = argv[++i];
         } else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
             target_name = argv[++i];
+        } else if (strcmp(argv[i], "-c") == 0) {
+            compile_only = true;
+            make_lib     = true;
+        } else if (strcmp(argv[i], "-S") == 0) {
+            asm_only = true;
+        } else if (strcmp(argv[i], "--lib") == 0) {
+            make_lib = true;
+        } else if (strcmp(argv[i], "--static-lib") == 0) {
+            make_static = true;
+            make_lib    = true;
         } else if (strcmp(argv[i], "--dump-ast") == 0) {
             dump_ast = true;
         } else if (strcmp(argv[i], "--dump-ir") == 0) {
@@ -131,9 +202,16 @@ int main(int argc, char** argv) {
             usage(stdout, argv[0]);
         } else if (strcmp(argv[i], "--run") == 0 || strcmp(argv[i], "-r") == 0) {
             run = true;
+        } else if (strcmp(argv[i], "--no-rei-main") == 0) {
+            no_rei_main = true;
+        } else if (strcmp(argv[i], "--no-main") == 0) {
+            no_main = true;
+        } else if (strcmp(argv[i], "--no-libm") == 0) {
+            no_libm = true;
         } else if (argv[i][0] != '-') {
             src_path = argv[i];
         } else {
+            fprintf(stderr, "unknown option: %s\n", argv[i]);
             usage(stderr, argv[0]);
         }
     }
@@ -153,7 +231,18 @@ int main(int argc, char** argv) {
     src_path = abs_src;
 
     if (!out_path) {
-        default_output_path(src_path, out_buf, sizeof(out_buf));
+        char* ext = "";
+#ifdef _WIN32
+        ext = ".exe";
+#endif
+        if (compile_only) {
+            ext = ".o";
+        } else if (make_lib) {
+            ext = make_static ? ".a" : ".so";
+        } else if (asm_only) {
+            ext = ".asm";
+        }
+        default_output_path(src_path, out_buf, sizeof(out_buf), ext);
         out_path = out_buf;
     }
 
@@ -177,7 +266,9 @@ int main(int argc, char** argv) {
         goto done;
     }
 
-    if (semantic_check(module) < 0)
+    CompileConfig config = {.no_main = no_main, .no_rei_main = no_rei_main, .is_library = make_lib};
+
+    if (semantic_check(module, &config) < 0)
         goto done;
 
     IrModule* ir = ir_lower(module);
@@ -230,12 +321,50 @@ int main(int argc, char** argv) {
         fclose(asm_file);
     }
 
-    if (!target->compile(asm_path, out_path, tmp_dir)) {
+    if (asm_only) {
+        if (copy_file(asm_path, out_path)) {
+            size_t file_lines = 0;
+            if (get_file_size(out_path, NULL, &file_lines)) {
+                fprintf(stderr, "wrote %s (%zu lines)\n", out_path, file_lines);
+            } else {
+                fprintf(stderr, "wrote %s\n", out_path);
+            }
+        } else {
+            fprintf(stderr, "failed to copy assembly file\n");
+        }
+        goto done;
+    }
+
+    CompileOptions compile_opts = {
+        .compile_only = compile_only,
+        .asm_only     = asm_only,
+        .make_lib     = make_lib,
+        .make_static  = make_static,
+    };
+
+    if (!target->compile(asm_path, out_path, tmp_dir, &compile_opts)) {
         fprintf(stderr, "compile failed\n");
         goto done;
     }
 
-    fprintf(stderr, "wrote %s\n", out_path);
+    char   size_buf[64];
+    size_t file_size = 0;
+    if (!get_file_size(out_path, &file_size, NULL)) {
+        fprintf(stderr, "failed to get file size\n");
+        goto done;
+    }
+    if (file_size == 0) {
+        fprintf(stderr, "warning: output file is empty\n");
+    }
+    if (file_size > 1024 * 2) {
+        double file_size_kb = file_size / 1024.0;
+        snprintf(size_buf, sizeof(size_buf), "%.1f KB", file_size_kb);
+    } else
+        snprintf(size_buf, sizeof(size_buf), "%zu bytes", file_size);
+
+    const char* size = size_buf;
+
+    fprintf(stderr, "wrote %s (%s)\n", out_path, size);
 
     if (run) {
         char cmd[PATH_MAX + 4];

@@ -12,6 +12,7 @@ only tested on linux
 
 - gcc
 - fasm
+- ar
 
 ```sh
 gcc nob.c -o nob
@@ -25,6 +26,7 @@ gcc nob.c -o nob
 - [nob.h](https://github.com/tsoding/nob.h) - for build recipe
 - [ht.h](https://github.com/tsoding/ht.h) - for hash tables
 - [Jai](https://jaiprogramming.com/) - as an inspiration
+- [B Lang](https://github.com/bext-lang/b/) - compiler inspiration & rule110 example
 
 ## License
 

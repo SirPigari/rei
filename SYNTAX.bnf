@@ -36,12 +36,17 @@ param = ident , ":" , type ;
 (* Prefix letter determines type family; optional bits suffix  *)
 (* defaults to 64 when omitted.                                *)
 
-type = "void"
-     | int-type
-     | float-type ;
+type = base-type
+     | "*" , type                            (* pointer type    *)
+     | "[" , type , "]"                      (* array type [T]  *)
+     | "[" , type , ";" , int-lit , "]" ;   (* array type [T;N]*)
+
+base-type = "void"
+          | int-type
+          | float-type ;
 
 int-type = ( "i" | "s" ) , [ bits ]   (* signed integer   *)
-         | "u" , [ bits ]             (* unsigned integer *) ;
+         | "u" , [ bits ] ;           (* unsigned integer *)
 
 float-type = "f" , [ bits ] ;
 
@@ -56,6 +61,7 @@ stmt = block-stmt
      | var-decl
      | const-decl
      | var-assign
+     | index-assign
      | expr-stmt ;
 
 block-stmt = "{" , { stmt } , "}" ;
@@ -71,6 +77,8 @@ var-decl = ident , ":" , type , [ "=" , expr ] , ";" ;
 const-decl = ident , "::" , type , [ "=" , expr ] , ";" ;
 
 var-assign = ident , assign-op , expr , ";" ;
+
+index-assign = postfix-expr , "[" , expr , "]" , assign-op , expr , ";" ;
 
 assign-op = "=" | "+=" | "-=" | "*=" | "/=" | "%="
           | "&=" | "|=" | "^=" | "~=" | "<<=" | ">>="
@@ -121,7 +129,12 @@ unary = unary-op , unary
 
 unary-op = "-" | "+" | "!" | "~" | "&" | "*" | "++" | "--" ;
 
-postfix = primary , [ postfix-op ] ;
+postfix = postfix-expr , [ postfix-op ] ;
+
+postfix-expr = primary , { postfix-expr-op } ;
+
+postfix-expr-op = "[" , expr , "]"               (* array indexing  *)
+                | "(" , arg-list , ")" ;        (* function call    *)
 
 postfix-op = "++" | "--" ;
 
@@ -131,9 +144,11 @@ postfix-op = "++" | "--" ;
 primary = int-lit
         | float-lit
         | str-lit
-        | call
+        | array-lit
         | ident
         | "(" , expr , ")" ;
+
+array-lit = "[" , [ expr , { "," , expr } ] , "]" ;
 
 call = ident , "(" , arg-list , ")" ;
 

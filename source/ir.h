@@ -1,5 +1,6 @@
 #pragma once
 #include "ast.h"
+#include "diagnostics.h"
 
 typedef int IrVal; /* -1 = no value */
 #define IR_NO_VAL (-1)
@@ -21,6 +22,10 @@ typedef enum {
     IR_STRING,      /* v = &rodata[str_idx]  -- pointer to string literal */
     IR_GEP,         /* v = base_ptr + idx*elem_size  -- get element pointer */
     IR_ARRAY_INIT,  /* v = alloca([T;N]) -- stack array, elements filled by IR_STOREs */
+    IR_FAT_PTR,     /* v = fat.ptr       -- extract data pointer from fat pointer alloca */
+    IR_FAT_LEN,     /* v = fat.len       -- extract length from fat pointer alloca */
+    IR_FAT_SET_LEN, /* fat.len = val     -- store length into fat pointer alloca */
+    IR_CAST,        /* v = (type)src     -- numeric type conversion */
 } IrOpcode;
 
 typedef struct {
@@ -34,6 +39,7 @@ typedef struct {
         struct {
             char*  name;
             IrVal* args;
+            Type** arg_types;
             int    arg_count;
         } call;
         IrVal src;
@@ -41,6 +47,8 @@ typedef struct {
         struct {
             BinOp bop;
             IrVal blhs, brhs;
+            Type* lhs_type;
+            Type* rhs_type;
         };
         struct {
             UnOp  uop;
@@ -57,9 +65,14 @@ typedef struct {
             IrVal gep_base;
             IrVal gep_idx;
             int   gep_scale;
+            Type* gep_base_type; /* Type of the base value (may be fat pointer) */
         };
         int str_idx;
         int alloca_slots;
+        struct {
+            IrVal cast_src;
+            Type* cast_from_type; /* source type; i->type is the destination type */
+        };
     };
 } IrInstr;
 
@@ -76,6 +89,24 @@ typedef struct {
     bool     no_mangle;
 } IrFunc;
 
+typedef enum {
+    MAIN_FUNC_NO_FUNC,      /* no main func */
+    MAIN_FUNC_NONE,         /* main func with no params */
+    MAIN_FUNC_FAT_FAT,      /* main func with [][]u8 */
+    MAIN_FUNC_FAT_THIN,     /* main func with []*u8 */
+    MAIN_FUNC_CRT0,         /* main func with argc argv */
+    MAIN_FUNC_CRT0_SWAPPED, /* main func with argv argc*/
+    /* for crt0 params get the actual type from param_types[] */
+} MainFuncParams;
+
+typedef struct {
+    char*          name;
+    MainFuncParams params;
+    IrFunc*        func;
+    Type*          param_types[2]; /* param types, if NULL then none for that field */
+    Type*          ret_type;       /* return type */
+} MainFuncInfo;
+
 typedef struct {
     IrFunc** funcs;
     int      count;
@@ -84,9 +115,11 @@ typedef struct {
         char*          data;
         size_t         len;
         StrPrefixFlags str_flags;
-    }* strings;
-    int str_count;
-    int str_cap;
+    }*           strings;
+    int          str_count;
+    int          str_cap;
+    MainFuncInfo rei_main;
+    int          next_label;
 } IrModule;
 
 IrModule* ir_lower(Module* ast);

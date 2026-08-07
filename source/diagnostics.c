@@ -30,19 +30,30 @@ void diag_emit(DiagLevel level, Location loc, const char* fmt, ...) {
     fputc('\n', stderr);
 }
 
-void diag_ice(const char* file, int line, const char* msg) {
+void diag_ice(const char* file, int line, ...) {
+    va_list args;
+    va_start(args, line);
+
+    const char* fmt = va_arg(args, const char*);
+
     void* frames[64];
     int   n = backtrace(frames, 64);
 
     char** symbols = backtrace_symbols(frames, n);
-    if (!symbols)
-        return;
+    if (symbols) {
+        for (int i = 0; i < n; i++)
+            fprintf(stderr, "    %s\n", symbols[i]);
 
-    for (int i = 0; i < n; i++)
-        fprintf(stderr, "    %s\n", symbols[i]);
+        free(symbols);
+    }
 
-    free(symbols);
     fprintf(stderr, "^^^ Backtrace\n");
-    fprintf(stderr, "%s:%d: Internal Compiler Error (ICE):\n%s\n", file, line, msg);
+    fprintf(stderr, "%s:%d: Internal Compiler Error (ICE):\n", file, line);
+
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+
+    va_end(args);
+
     exit(128);
 }

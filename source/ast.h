@@ -2,9 +2,9 @@
 #include "diagnostics.h"
 #include "lexer.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
 
 typedef enum {
     /* void */
@@ -19,7 +19,8 @@ typedef enum {
     TYPE_PTR,
     /* [T], [T; N] */
     TYPE_ARRAY,
-    TYPE_UNSUPPORTED, /* unsupported | count */
+    /* unsupported | count */
+    TYPE_UNSUPPORTED,
 } TypeKind;
 
 typedef struct Type Type;
@@ -28,51 +29,61 @@ typedef struct Type {
     uint16_t bits;
     union {
         struct {
-            bool is_unsigned;
+            unsigned is_unsigned : 1;
+            unsigned is_abstract : 1;
+            unsigned is_size     : 1;
         } int_type;
         struct {
-            bool is_fat;
-            Type* elem_type;
+            unsigned is_fat : 1;
+            Type*    elem_type;
         } ptr_type;
         struct {
-            Type* elem_type;
+            Type*  elem_type;
             size_t len;
         } array_type;
     };
 } Type;
 
 Type* type_number(TypeKind k, uint16_t bits, bool is_unsigned);
+Type* type_number_with_flag(TypeKind k, uint16_t bits, bool is_unsigned, bool is_abstract, bool is_size);
 Type* type_void(void);
 Type* type_ptr(Type* elem, bool is_fat);
 Type* type_array(Type* elem, size_t len); /* len=0 => unsized [T] */
+Type* type_abstract_int(void);
 
 typedef struct {
-    char* name;
-    Type* type;
+    char*    name; /* NULL = unnamed */
+    Type*    type;
+    bool     is_variadic;
+    Location loc;
 } Param;
 
 typedef enum {
-    AST_FUNC_DECL,   /* name :: (params) -> ret { body }  */
-    AST_EXTERN_DECL, /* extern name(params) -> ret        */
-    AST_VAR_DECL,    /* name: type = init;                */
-    AST_CONST_DECL,  /* name :: type = init;              */
+    AST_FUNC_DECL,    /* name :: (params) -> ret { body }  */
+    AST_EXTERN_DECL,  /* extern name(params) -> ret        */
+    AST_VAR_DECL,     /* name: type = init;                */
+    AST_CONST_DECL,   /* name :: type = init;              */
 
-    AST_RETURN_STMT, /* return [expr];                    */
-    AST_EXPR_STMT,   /* expr;                             */
-    AST_BLOCK_STMT,  /* { stmts }                         */
-    AST_IF_STMT,     /* if (cond) then [else]             */
-    AST_WHILE_STMT,  /* while (cond) body                 */
-    AST_VAR_ASSIGN,  /* name = expr;                      */
+    AST_RETURN_STMT,  /* return [expr];                    */
+    AST_EXPR_STMT,    /* expr;                             */
+    AST_BLOCK_STMT,   /* { stmts }                         */
+    AST_IF_STMT,      /* if (cond) then [else]             */
+    AST_WHILE_STMT,   /* while (cond) body                 */
+    AST_VAR_ASSIGN,   /* name = expr;                      */
+    AST_INDEX_ASSIGN, /* name[idx] = expr;                 */
 
-    AST_INT_LIT,     /* 42, 42u8, 42i32                   */
-    AST_FLOAT_LIT,   /* 3.14, 3.14f32                     */
-    AST_STRING_LIT,  /* "hello"                           */
-    AST_ARRAY_LIT,   /* [1, 2, 3]                         */
-    AST_TYPE_LIT,    /* i32, u64, f32                     */
-    AST_IDENT,       /* foo                               */
-    AST_CALL,        /* foo(args...)                      */
-    AST_BINOP,       /* lhs OP rhs                        */
-    AST_UNOP,        /* OP operand                        */
+    AST_INT_LIT,      /* 42, 42u8, 42i32                   */
+    AST_FLOAT_LIT,    /* 3.14, 3.14f32                     */
+    AST_STRING_LIT,   /* "hello"                           */
+    AST_ARRAY_LIT,    /* [1, 2, 3]                         */
+    AST_TYPE_LIT,     /* i32, u64, f32                     */
+    AST_IDENT,        /* foo                               */
+    AST_INDEX,        /* arr[idx]                          */
+    AST_MEMBER,       /* value.member                      */
+    AST_CALL,         /* foo(args...)                      */
+    AST_BINOP,        /* lhs OP rhs                        */
+    AST_UNOP,         /* OP operand                        */
+    AST_CAST,         /* expr as Type                      */
 } AstKind;
 
 typedef enum {
@@ -188,6 +199,20 @@ struct AstNode {
             AstNode* assign_value;
         };
 
+        /* AST_INDEX_ASSIGN */
+        struct {
+            AstNode* idx_array;
+            AstNode* idx_index;
+            AssignOp idx_assign_op;
+            AstNode* idx_assign_value;
+        };
+
+        /* AST_MEMBER */
+        struct {
+            AstNode* member_value;
+            char*    member_name;
+        };
+
         /* AST_INT_LIT */
         struct {
             int64_t ival;
@@ -200,8 +225,8 @@ struct AstNode {
 
         /* AST_STRING_LIT */
         struct {
-            char*  str;
-            size_t len;
+            char*          str;
+            size_t         len;
             StrPrefixFlags str_flags;
         };
 
@@ -219,6 +244,12 @@ struct AstNode {
         /* AST_IDENT */
         struct {
             char* ident;
+        };
+
+        /* AST_INDEX */
+        struct {
+            AstNode* array;
+            AstNode* index;
         };
 
         /* AST_CALL */
@@ -240,13 +271,22 @@ struct AstNode {
             UnOp     uop;
             AstNode* operand;
         };
+
+        /* AST_CAST */
+        struct {
+            AstNode* cast_expr;
+            Type*    cast_type; /* NULL = inferred type */
+        };
     };
 };
 
 typedef struct {
-    AstNode** decls;
-    int       count;
+    AstNode**   decls;
+    int         count;
+    const char* filepath;
 } Module;
 
+void     type_to_string(Type* t, char* buf, size_t buf_size);
+int      type_bytes(Type* t);
 AstNode* ast_node(AstKind kind, Location loc);
 void     ast_dump(Module* m);

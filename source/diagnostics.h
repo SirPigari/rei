@@ -14,8 +14,8 @@ typedef enum {
 } DiagLevel;
 
 void diag_emit(DiagLevel level, Location loc, const char* fmt, ...);
-void diag_ice(const char* file, int line, const char* msg); /* internal compiler error */
+void diag_ice(const char* file, int line, ...); /* internal compiler error */
 
-#define ICE(msg) diag_ice(__FILE__, __LINE__, msg)
+#define ICE(...) diag_ice(__FILE__, __LINE__, __VA_ARGS__)
 
 extern int diag_error_count;

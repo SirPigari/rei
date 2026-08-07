@@ -5,5 +5,4 @@ nob.old
 build/
 examples/*
 !examples/*.rei
-test.rei
-test
+test*
