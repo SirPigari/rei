@@ -59,31 +59,30 @@ typedef struct {
 } Param;
 
 typedef enum {
-    AST_FUNC_DECL,    /* name :: (params) -> ret { body }  */
-    AST_EXTERN_DECL,  /* extern name(params) -> ret        */
-    AST_VAR_DECL,     /* name: type = init;                */
-    AST_CONST_DECL,   /* name :: type = init;              */
+    AST_FUNC_DECL,   /* name :: (params) -> ret { body }  */
+    AST_EXTERN_DECL, /* extern name(params) -> ret        */
+    AST_VAR_DECL,    /* name: type = init;                */
+    AST_CONST_DECL,  /* name :: type = init;              */
 
-    AST_RETURN_STMT,  /* return [expr];                    */
-    AST_EXPR_STMT,    /* expr;                             */
-    AST_BLOCK_STMT,   /* { stmts }                         */
-    AST_IF_STMT,      /* if (cond) then [else]             */
-    AST_WHILE_STMT,   /* while (cond) body                 */
-    AST_VAR_ASSIGN,   /* name = expr;                      */
-    AST_INDEX_ASSIGN, /* name[idx] = expr;                 */
+    AST_RETURN_STMT, /* return [expr];                    */
+    AST_EXPR_STMT,   /* expr;                             */
+    AST_BLOCK_STMT,  /* { stmts }                         */
+    AST_IF_STMT,     /* if (cond) then [else]             */
+    AST_WHILE_STMT,  /* while (cond) body                 */
+    AST_ASSIGN,      /* target = expr;                    */
 
-    AST_INT_LIT,      /* 42, 42u8, 42i32                   */
-    AST_FLOAT_LIT,    /* 3.14, 3.14f32                     */
-    AST_STRING_LIT,   /* "hello"                           */
-    AST_ARRAY_LIT,    /* [1, 2, 3]                         */
-    AST_TYPE_LIT,     /* i32, u64, f32                     */
-    AST_IDENT,        /* foo                               */
-    AST_INDEX,        /* arr[idx]                          */
-    AST_MEMBER,       /* value.member                      */
-    AST_CALL,         /* foo(args...)                      */
-    AST_BINOP,        /* lhs OP rhs                        */
-    AST_UNOP,         /* OP operand                        */
-    AST_CAST,         /* expr as Type                      */
+    AST_INT_LIT,     /* 42, 42u8, 42i32                   */
+    AST_FLOAT_LIT,   /* 3.14, 3.14f32                     */
+    AST_STRING_LIT,  /* "hello"                           */
+    AST_ARRAY_LIT,   /* [1, 2, 3]                         */
+    AST_TYPE_LIT,    /* i32, u64, f32                     */
+    AST_IDENT,       /* foo                               */
+    AST_INDEX,       /* arr[idx]                          */
+    AST_MEMBER,      /* value.member                      */
+    AST_CALL,        /* foo(args...)                      */
+    AST_BINOP,       /* lhs OP rhs                        */
+    AST_UNOP,        /* OP operand                        */
+    AST_CAST,        /* expr as Type                      */
 } AstKind;
 
 typedef enum {
@@ -158,9 +157,8 @@ struct AstNode {
         /* AST_VAR_DECL, AST_CONST_DECL */
         struct {
             char*    var_name;
-            Type*    var_type;
-            AstNode* init; /* NULL = no initializer */
-            bool     is_thread_local;
+            Type*    var_type; /* NULL = inferred type */
+            AstNode* init;     /* NULL = no initializer */
         };
 
         /* AST_RETURN_STMT */
@@ -192,19 +190,11 @@ struct AstNode {
             AstNode* while_body;
         };
 
-        /* AST_VAR_ASSIGN */
+        /* AST_ASSIGN */
         struct {
-            char*    assign_name;
+            AstNode* assign_target; /* AST_IDENT or AST_INDEX */
             AssignOp assign_op;
             AstNode* assign_value;
-        };
-
-        /* AST_INDEX_ASSIGN */
-        struct {
-            AstNode* idx_array;
-            AstNode* idx_index;
-            AssignOp idx_assign_op;
-            AstNode* idx_assign_value;
         };
 
         /* AST_MEMBER */

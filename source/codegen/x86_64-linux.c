@@ -334,7 +334,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             if (ins->op == IR_ALLOCA || ins->op == IR_ARRAY_INIT) {
                 slotmap.stack_size += ins->alloca_slots * 8;
                 int* offset_ptr = ht_find_or_put(&slotmap.offsets, ins->dst);
-                *offset_ptr     = -(int)slotmap.stack_size + (ins->alloca_slots - 1) * 8;
+                *offset_ptr     = -(int)slotmap.stack_size;
                 mark_alloca(&slotmap, ins->dst);
             } else if (ins->op == IR_CONST_INT) {
                 *ht_put(&slotmap.const_vals, ins->dst) = ins->ival;
@@ -358,8 +358,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
     }
 
     if (slotmap.stack_size) {
-        int total_needed = (slotmap.stack_size + 8 + 15) & ~15;
-        int sub_amount   = total_needed - 8;
+        int sub_amount = (slotmap.stack_size + 15) & ~15;
         L(out, "sub rsp, %d", sub_amount);
     }
 
@@ -387,7 +386,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     L(out, "mov rax, %s", ARGREGS[i->param_idx]);
                     emit_store_slot(out, 8, mem(slot_offset, buf));
                     L(out, "mov rax, %s", ARGREGS[i->param_idx + 1]);
-                    emit_store_slot(out, 8, mem(slot_offset - 8, buf));
+                    emit_store_slot(out, 8, mem(slot_offset + 8, buf));
                 } else if (i->param_idx < MAX_ARGREGS) {
                     L(out, "mov rax, %s", ARGREGS[i->param_idx]);
                     emit_store_slot(out, bytes, mem(slot_of(&slotmap, i->dst), buf));
@@ -601,8 +600,14 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
 
             case IR_RET:
                 if (i->src != IR_NO_VAL) {
-                    if (is_float) {
+                    Type* return_type = f->ret_type;
+                    if (return_type && return_type->kind == TYPE_FLOAT) {
                         L(out, "movq xmm0, qword %s", mem(slot_of(&slotmap, i->src), buf));
+                    } else if (return_type) {
+                        int  ret_bytes  = type_bytes(return_type);
+                        bool ret_signed = type_is_signed(return_type);
+                        emit_load_or_const(
+                            out, &slotmap, i->src, ret_bytes, ret_signed, mem(slot_of(&slotmap, i->src), buf));
                     } else {
                         int  ret_bytes  = type_bytes(i->type);
                         bool ret_signed = type_is_signed(i->type);
@@ -646,9 +651,9 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     int src_slot = slot_of(&slotmap, i->load_ptr);
                     if (fat) {
                         L(out, "mov rax, qword %s", mem(src_slot, buf));
-                        L(out, "mov rcx, qword %s", mem(src_slot - 8, buf2));
+                        L(out, "mov rcx, qword %s", mem(src_slot + 8, buf2));
                         L(out, "mov qword %s, rax", mem(dst_slot, buf));
-                        L(out, "mov qword %s, rcx", mem(dst_slot - 8, buf2));
+                        L(out, "mov qword %s, rcx", mem(dst_slot + 8, buf2));
                     } else {
                         L(out, "lea rax, %s", mem(src_slot, buf));
                         switch (bytes) {
@@ -674,7 +679,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                         L(out, "mov rcx, qword [rax]");
                         L(out, "mov rdx, qword [rax + 8]");
                         L(out, "mov qword %s, rcx", mem(dst_slot, buf));
-                        L(out, "mov qword %s, rdx", mem(dst_slot - 8, buf2));
+                        L(out, "mov qword %s, rdx", mem(dst_slot + 8, buf2));
                     } else {
                         switch (bytes) {
                             case 1:
@@ -705,9 +710,9 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     int val_off = slot_of(&slotmap, i->store_val);
                     int ptr_off = slot_of(&slotmap, i->store_ptr);
                     L(out, "mov rax, qword %s", mem(val_off, buf));
-                    L(out, "mov rcx, qword %s", mem(val_off - 8, buf2));
+                    L(out, "mov rcx, qword %s", mem(val_off + 8, buf2));
                     L(out, "mov qword %s, rax", mem(ptr_off, buf));
-                    L(out, "mov qword %s, rcx", mem(ptr_off - 8, buf2));
+                    L(out, "mov qword %s, rcx", mem(ptr_off + 8, buf2));
                 } else if (is_alloca(&slotmap, i->store_ptr)) {
                     int alloca_off = slot_of(&slotmap, i->store_ptr);
                     L(out, "lea r11, %s", mem(alloca_off, buf));
@@ -819,7 +824,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             case IR_FAT_LEN: {
                 int src_slot = slot_of(&slotmap, i->src);
                 int dst_slot = slot_of(&slotmap, i->dst);
-                L(out, "mov rax, qword %s", mem(src_slot - 8, buf));
+                L(out, "mov rax, qword %s", mem(src_slot + 8, buf));
                 L(out, "mov qword %s, rax", mem(dst_slot, buf2));
                 break;
             }
@@ -827,8 +832,8 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             case IR_FAT_SET_LEN: {
                 int fat_slot = slot_of(&slotmap, i->store_ptr);
                 int val_slot = slot_of(&slotmap, i->store_val);
-                L(out, "mov rax, qword %s", mem(val_slot, buf));
-                L(out, "mov qword %s, rax", mem(fat_slot - 8, buf2));
+                emit_load_or_const_to(out, &slotmap, i->store_val, "rax", 8, false, mem(val_slot, buf));
+                L(out, "mov qword %s, rax", mem(fat_slot + 8, buf2));
                 break;
             }
 
@@ -914,7 +919,7 @@ void codegen_x86_64_linux(IrModule* m, FILE* out) {
         IrFunc* f = m->funcs[fi];
         if (f->is_extern)
             fprintf(out, "extrn %s\n", f->name);
-        else
+        else if (f->is_public)
             fprintf(out, "public %s\n", symmap_lookup(&sm, f->name));
     }
     if (has_main)
@@ -1052,7 +1057,7 @@ bool codegen_x86_64_linux_compile(const char*           asm_path,
         opts = &default_opts;
 
     if (opts->asm_only) {
-        return false; /* no-op, assembly already generated */
+        return false; /* assembly already generated */
     }
 
     char obj_path[4096];

@@ -502,6 +502,9 @@ static Token lex_one(Lexer* l) {
             if (*l->cur == ':') {
                 advance(l);
                 return make_tok(l, TK_DCOLON, loc, start);
+            } else if (*l->cur == '=') {
+                advance(l);
+                return make_tok(l, TK_COLONEQ, loc, start);
             }
             return make_tok(l, TK_COLON, loc, start);
         case '+':
@@ -855,6 +858,8 @@ const char* token_kind_str(TokenKind k) {
             return "'>>='";
         case TK_STARSTAREQ:
             return "'**='";
+        case TK_COLONEQ:
+            return "':='";
         case TK_BANG:
             return "'!'";
         case TK_LAND:

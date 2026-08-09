@@ -321,8 +321,9 @@ static void dump_stmt(AstNode* s, int ind) {
             printf(")\n");
             dump_stmt(s->while_body, ind + 4);
             break;
-        case AST_VAR_ASSIGN: {
-            printf("%s ", s->assign_name);
+        case AST_ASSIGN: {
+            dump_expr(s->assign_target, ind);
+            printf(" ");
             switch (s->assign_op) {
                 case ASSIGN_EQ:
                     printf("= ");
@@ -341,6 +342,33 @@ static void dump_stmt(AstNode* s, int ind) {
                     break;
                 case ASSIGN_MODEQ:
                     printf("%%= ");
+                    break;
+                case ASSIGN_BITANDEQ:
+                    printf("&= ");
+                    break;
+                case ASSIGN_BITOREQ:
+                    printf("|= ");
+                    break;
+                case ASSIGN_BITXOREQ:
+                    printf("^= ");
+                    break;
+                case ASSIGN_SHLEQ:
+                    printf("<<= ");
+                    break;
+                case ASSIGN_SHREQ:
+                    printf(">>= ");
+                    break;
+                case ASSIGN_LANDEQ:
+                    printf("&&= ");
+                    break;
+                case ASSIGN_LOREQ:
+                    printf("||= ");
+                    break;
+                case ASSIGN_POWEQ:
+                    printf("**= ");
+                    break;
+                default:
+                    printf("? ");
                     break;
             }
             dump_expr(s->assign_value, ind);
@@ -365,62 +393,6 @@ static void dump_stmt(AstNode* s, int ind) {
             }
             printf(";\n");
             break;
-        case AST_INDEX_ASSIGN: {
-            dump_expr(s->idx_array, ind);
-            printf("[");
-            dump_expr(s->idx_index, ind);
-            printf("] ");
-            switch (s->idx_assign_op) {
-                case ASSIGN_EQ:
-                    printf("= ");
-                    break;
-                case ASSIGN_ADDEQ:
-                    printf("+= ");
-                    break;
-                case ASSIGN_SUBEQ:
-                    printf("-= ");
-                    break;
-                case ASSIGN_MULEQ:
-                    printf("*= ");
-                    break;
-                case ASSIGN_DIVEQ:
-                    printf("/= ");
-                    break;
-                case ASSIGN_MODEQ:
-                    printf("%%=");
-                    break;
-                case ASSIGN_BITANDEQ:
-                    printf("&= ");
-                    break;
-                case ASSIGN_BITOREQ:
-                    printf("|= ");
-                    break;
-                case ASSIGN_BITXOREQ:
-                    printf("^= ");
-                    break;
-                case ASSIGN_SHLEQ:
-                    printf("<<= ");
-                    break;
-                case ASSIGN_SHREQ:
-                    printf(">>= ");
-                    break;
-                case ASSIGN_POWEQ:
-                    printf("**= ");
-                    break;
-                case ASSIGN_LANDEQ:
-                    printf("&&= ");
-                    break;
-                case ASSIGN_LOREQ:
-                    printf("||= ");
-                    break;
-                default:
-                    printf("? ");
-                    break;
-            }
-            dump_expr(s->idx_assign_value, ind);
-            printf(";\n");
-            break;
-        }
         default:
             printf("?stmt(%d)\n", s->kind);
             break;

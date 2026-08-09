@@ -642,7 +642,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 e->type = type_number(TYPE_INT, 32, 0);
             } else {
                 if (is_abstract_int(lt) && is_abstract_int(rt)) {
-                    e->type = NULL;
+                    e->type = type_abstract_int();
                 } else if (is_abstract_int(lt)) {
                     e->type = rt;
                 } else {
@@ -776,7 +776,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 ((value_type->kind == TYPE_PTR && value_type->ptr_type.is_fat) || value_type->kind == TYPE_ARRAY)) {
                 if (strcmp(e->member_name, "len") == 0 || strcmp(e->member_name, "length") == 0 ||
                     strcmp(e->member_name, "count") == 0) {
-                    e->type = NULL;
+                    e->type = type_abstract_int();
                     return e->type;
                 } else {
                     diag_emit(DIAG_ERROR,
@@ -886,24 +886,41 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
         }
 
         case AST_VAR_DECL: {
-            s->type          = s->var_type;
             Type* scope_type = s->var_type;
             if (s->init) {
                 Type* it = check_expr_hint(s->init, sc, s->var_type);
-                if (s->var_type && !types_compatible_with_decay(it, s->var_type) &&
-                    !types_assignable(it, s->var_type) && !is_error_type(it)) {
-                    char is[64], vs[64];
-                    diag_emit(DIAG_ERROR,
-                              s->init->loc,
-                              "initializer type mismatch: variable '%s' has type %s, "
-                              "initializer has type %s",
-                              s->var_name,
-                              type_str(s->var_type, vs, sizeof(vs)),
-                              type_str(it, is, sizeof(is)));
-                    diag_type_hint(it, s->var_type, s->init->loc);
-                    scope_type = it;
+
+                if (!s->var_type) {
+                    s->var_type = it;
+                    scope_type  = it;
+                } else {
+                    if (s->var_type->kind == TYPE_ARRAY && s->var_type->array_type.len == 0 && it &&
+                        it->kind == TYPE_ARRAY && it->array_type.len > 0 &&
+                        types_equal(s->var_type->array_type.elem_type, it->array_type.elem_type)) {
+                        s->var_type = type_array(s->var_type->array_type.elem_type, it->array_type.len);
+                        scope_type  = s->var_type;
+                        it          = s->var_type;
+                    }
+
+                    if (!types_compatible_with_decay(it, s->var_type) &&
+                        !types_assignable(it, s->var_type) && !is_error_type(it)) {
+                        char is[64], vs[64];
+                        diag_emit(DIAG_ERROR,
+                                  s->init->loc,
+                                  "initializer type mismatch: variable '%s' has type %s, "
+                                  "initializer has type %s",
+                                  s->var_name,
+                                  type_str(s->var_type, vs, sizeof(vs)),
+                                  type_str(it, is, sizeof(is)));
+                        diag_type_hint(it, s->var_type, s->init->loc);
+                        scope_type = it;
+                    }
                 }
+            } else if (!s->var_type) {
+                ICE("variable declaration '%s' requires either a type annotation or an initializer", s->var_name);
+                scope_type = type_void();
             }
+            s->type = s->var_type;
             SymbolEntry* existing = scope_lookup(sc, s->var_name);
             if (existing && existing->decl != NULL) {
                 diag_emit(DIAG_ERROR, s->loc, "redefinition of variable '%s'", s->var_name);
@@ -924,7 +941,18 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
 
             Type* it = check_expr_hint(s->init, sc, s->var_type);
 
-            if (s->var_type) {
+            if (!s->var_type) {
+                s->var_type = it;
+                scope_type  = it;
+            } else {
+                if (s->var_type->kind == TYPE_ARRAY && s->var_type->array_type.len == 0 && it &&
+                    it->kind == TYPE_ARRAY && it->array_type.len > 0 &&
+                    types_equal(s->var_type->array_type.elem_type, it->array_type.elem_type)) {
+                    s->var_type = type_array(s->var_type->array_type.elem_type, it->array_type.len);
+                    scope_type  = s->var_type;
+                    it          = s->var_type;
+                }
+
                 if (it && !types_equal(it, s->var_type)) {
                     char is[64], vs[64];
                     diag_emit(DIAG_ERROR,
@@ -937,11 +965,8 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                     diag_type_hint(it, s->var_type, s->init->loc);
                     scope_type = it;
                 }
-                s->type = s->var_type;
-            } else {
-                scope_type = NULL;
-                s->type    = NULL;
             }
+            s->type = s->var_type;
 
             SymbolEntry* existing = scope_lookup(sc, s->var_name);
             if (existing && existing->decl != NULL) {
@@ -952,83 +977,124 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
             break;
         }
 
-        case AST_VAR_ASSIGN: {
-            SymbolEntry* sym = scope_lookup(sc, s->assign_name);
-            if (!sym) {
-                diag_emit(DIAG_ERROR, s->loc, "undefined variable '%s'", s->assign_name);
-                check_expr(s->assign_value, sc);
-                break;
-            }
-            Type* vt = check_expr_hint(s->assign_value, sc, sym->type);
-            if (!types_equal(sym->type, vt) && !types_assignable(vt, sym->type)) {
-                char ss[64], vs[64];
-                diag_emit(DIAG_ERROR,
-                          s->loc,
-                          "assignment type mismatch: '%s' has type %s, value has type %s",
-                          s->assign_name,
-                          type_str(sym->type, ss, sizeof(ss)),
-                          type_str(vt, vs, sizeof(vs)));
-                diag_type_hint(vt, sym->type, s->assign_value->loc);
-            }
-            if (s->assign_op != ASSIGN_EQ && !is_numeric(sym->type)) {
-                char ts[64];
-                diag_emit(DIAG_ERROR,
-                          s->loc,
-                          "compound assignment requires numeric type, got %s",
-                          type_str(sym->type, ts, sizeof(ts)));
-            }
-            s->type = sym->type;
-            break;
-        }
+        case AST_ASSIGN: {
+            if (s->assign_target->kind == AST_IDENT) {
+                SymbolEntry* sym = scope_lookup(sc, s->assign_target->ident);
+                if (!sym) {
+                    diag_emit(DIAG_ERROR, s->loc, "undefined variable '%s'", s->assign_target->ident);
+                    check_expr(s->assign_value, sc);
+                    break;
+                }
+                Type* vt = check_expr_hint(s->assign_value, sc, sym->type);
+                if (!types_equal(sym->type, vt) && !types_assignable(vt, sym->type)) {
+                    char ss[64], vs[64];
+                    diag_emit(DIAG_ERROR,
+                              s->loc,
+                              "assignment type mismatch: '%s' has type %s, value has type %s",
+                              s->assign_target->ident,
+                              type_str(sym->type, ss, sizeof(ss)),
+                              type_str(vt, vs, sizeof(vs)));
+                    diag_type_hint(vt, sym->type, s->assign_value->loc);
+                }
+                if (s->assign_op != ASSIGN_EQ && !is_numeric(sym->type)) {
+                    char ts[64];
+                    diag_emit(DIAG_ERROR,
+                              s->loc,
+                              "compound assignment requires numeric type, got %s",
+                              type_str(sym->type, ts, sizeof(ts)));
+                }
+                s->type = sym->type;
+            } else if (s->assign_target->kind == AST_INDEX) {
+                Type* array_type = check_expr(s->assign_target->array, sc);
+                Type* int_hint   = type_number(TYPE_INT, 64, false);
+                Type* index_type = check_expr_hint(s->assign_target->index, sc, int_hint);
 
-        case AST_INDEX_ASSIGN: {
-            Type* array_type = check_expr(s->idx_array, sc);
-            Type* int_hint   = type_number(TYPE_INT, 64, false);
-            Type* index_type = check_expr_hint(s->idx_index, sc, int_hint);
+                if (!is_integer(index_type)) {
+                    char s_str[64];
+                    diag_emit(DIAG_ERROR,
+                              s->assign_target->index->loc,
+                              "array index must be integer, got %s",
+                              type_str(index_type, s_str, sizeof(s_str)));
+                }
 
-            if (!is_integer(index_type)) {
-                char s_str[64];
-                diag_emit(DIAG_ERROR,
-                          s->idx_index->loc,
-                          "array index must be integer, got %s",
-                          type_str(index_type, s_str, sizeof(s_str)));
-            }
+                Type* elem_type = NULL;
+                if (is_error_type(array_type)) {
+                    elem_type = ERROR_TYPE;
+                } else if (array_type && array_type->kind == TYPE_ARRAY) {
+                    elem_type = array_type->array_type.elem_type;
+                } else if (array_type && array_type->kind == TYPE_PTR) {
+                    elem_type = array_type->ptr_type.elem_type;
+                } else {
+                    char s_str[64];
+                    diag_emit(DIAG_ERROR,
+                              s->loc,
+                              "cannot index non-array/pointer type %s",
+                              type_str(array_type, s_str, sizeof(s_str)));
+                    elem_type = ERROR_TYPE;
+                }
 
-            Type* elem_type = NULL;
-            if (is_error_type(array_type)) {
-                elem_type = ERROR_TYPE;
-            } else if (array_type && array_type->kind == TYPE_ARRAY) {
-                elem_type = array_type->array_type.elem_type;
-            } else if (array_type && array_type->kind == TYPE_PTR) {
-                elem_type = array_type->ptr_type.elem_type;
+                Type* vt = check_expr_hint(s->assign_value, sc, elem_type);
+                if (elem_type && !types_equal(elem_type, vt) && !types_assignable(vt, elem_type)) {
+                    char et[64], vt_str[64];
+                    diag_emit(DIAG_ERROR,
+                              s->loc,
+                              "assignment type mismatch: element has type %s, value has type %s",
+                              type_str(elem_type, et, sizeof(et)),
+                              type_str(vt, vt_str, sizeof(vt_str)));
+                    diag_type_hint(vt, elem_type, s->assign_value->loc);
+                }
+
+                if (s->assign_op != ASSIGN_EQ && elem_type && !is_numeric(elem_type)) {
+                    char ts[64];
+                    diag_emit(DIAG_ERROR,
+                              s->loc,
+                              "compound assignment requires numeric type, got %s",
+                              type_str(elem_type, ts, sizeof(ts)));
+                }
+                s->type = elem_type;
+            } else if (s->assign_target->kind == AST_MEMBER) {
+                Type* value_type = check_expr(s->assign_target->member_value, sc);
+
+                if (is_error_type(value_type)) {
+                    check_expr(s->assign_value, sc);
+                    break;
+                }
+
+                bool is_fat_ptr = value_type && value_type->kind == TYPE_PTR && value_type->ptr_type.is_fat;
+                if (!is_fat_ptr) {
+                    diag_emit(DIAG_ERROR, s->loc, ".len assignment only allowed on fat pointers");
+                    check_expr(s->assign_value, sc);
+                    break;
+                }
+
+                if (strcmp(s->assign_target->member_name, "len") != 0 && 
+                    strcmp(s->assign_target->member_name, "length") != 0 &&
+                    strcmp(s->assign_target->member_name, "count") != 0) {
+                    diag_emit(DIAG_ERROR, s->loc, "fat pointer only has writable member 'len'");
+                    check_expr(s->assign_value, sc);
+                    break;
+                }
+
+                Type* target_type = type_abstract_int();
+                Type* vt = check_expr_hint(s->assign_value, sc, target_type);
+
+                if (!types_assignable(vt, target_type)) {
+                    char vt_str[64];
+                    diag_emit(DIAG_ERROR,
+                              s->loc,
+                              "cannot assign %s to fat pointer length (expected integer)",
+                              type_str(vt, vt_str, sizeof(vt_str)));
+                }
+
+                if (s->assign_op != ASSIGN_EQ) {
+                    diag_emit(DIAG_ERROR, s->loc, "compound assignment not allowed on fat pointer length");
+                }
+
+                s->type = target_type;
             } else {
-                char s_str[64];
-                diag_emit(DIAG_ERROR,
-                          s->loc,
-                          "cannot index non-array/pointer type %s",
-                          type_str(array_type, s_str, sizeof(s_str)));
-                elem_type = ERROR_TYPE;
+                diag_emit(DIAG_ERROR, s->loc, "assignment target must be a variable, array index, or fat pointer member");
+                check_expr(s->assign_value, sc);
             }
-
-            Type* vt = check_expr_hint(s->idx_assign_value, sc, elem_type);
-            if (elem_type && !types_equal(elem_type, vt) && !types_assignable(vt, elem_type)) {
-                char et[64], vt_str[64];
-                diag_emit(DIAG_ERROR,
-                          s->loc,
-                          "assignment type mismatch: element has type %s, value has type %s",
-                          type_str(elem_type, et, sizeof(et)),
-                          type_str(vt, vt_str, sizeof(vt_str)));
-                diag_type_hint(vt, elem_type, s->idx_assign_value->loc);
-            }
-
-            if (s->idx_assign_op != ASSIGN_EQ && elem_type && !is_numeric(elem_type)) {
-                char ts[64];
-                diag_emit(DIAG_ERROR,
-                          s->loc,
-                          "compound assignment requires numeric type, got %s",
-                          type_str(elem_type, ts, sizeof(ts)));
-            }
-            s->type = elem_type;
             break;
         }
 

@@ -272,11 +272,12 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
             Type*  ptype  = type_ptr(etype ? etype : type_number(TYPE_INT, 64, false), false);
             int    escale = etype ? type_bytes(etype) : 8;
 
-            IrInstr* arr      = emit(f);
-            arr->op           = IR_ARRAY_INIT;
-            arr->dst          = next_val(f);
-            arr->type         = ptype;
-            arr->alloca_slots = (int)n ? (int)n : 1;
+            IrInstr* arr = emit(f);
+            arr->op      = IR_ARRAY_INIT;
+            arr->dst     = next_val(f);
+            arr->type    = ptype;
+            int bytes_needed  = (int)n * escale;
+            arr->alloca_slots = bytes_needed ? (bytes_needed + 7) / 8 : 1;
 
             IrVal base = arr->dst;
             for (size_t ei = 0; ei < n; ei++) {
@@ -320,6 +321,12 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 if (vars) {
                     VarSlot* slot = ht_find(vars, e->ident);
                     if (slot && slot->ptr != IR_NO_VAL) {
+                        if (e->type && (e->type->kind == TYPE_ARRAY || e->type->kind == TYPE_PTR)) {
+                            if (e->type->kind == TYPE_PTR && e->type->ptr_type.is_fat && slot->val != IR_NO_VAL) {
+                                return slot->val;
+                            }
+                            return slot->ptr;
+                        }
                         IrInstr* ld  = emit(f);
                         ld->op       = IR_LOAD;
                         ld->dst      = next_val(f);
@@ -346,6 +353,12 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 VarSlot* slot = ht_find(vars, e->ident);
                 if (slot) {
                     if (slot->ptr != IR_NO_VAL) {
+                        if (e->type && (e->type->kind == TYPE_ARRAY || e->type->kind == TYPE_PTR)) {
+                            if (e->type->kind == TYPE_PTR && e->type->ptr_type.is_fat && slot->val != IR_NO_VAL) {
+                                return slot->val;
+                            }
+                            return slot->ptr;
+                        }
                         IrInstr* ld  = emit(f);
                         ld->op       = IR_LOAD;
                         ld->dst      = next_val(f);
@@ -422,9 +435,13 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
             return ld->dst;
         }
         case AST_MEMBER: {
-            if (!e->member_value->type || e->member_value->type->kind != TYPE_PTR ||
-                !e->member_value->type->ptr_type.is_fat) {
-                ICE("member access only valid on fat pointers for now");
+            Type* val_type = e->member_value->type;
+            bool is_fat_ptr = val_type && val_type->kind == TYPE_PTR && val_type->ptr_type.is_fat;
+            bool is_array = val_type && val_type->kind == TYPE_ARRAY;
+            bool is_str_lit = e->member_value->kind == AST_STRING_LIT;
+
+            if (!is_fat_ptr && !is_array && !is_str_lit) {
+                ICE("member access only valid on fat pointers, arrays, or string literals");
                 return IR_NO_VAL;
             }
 
@@ -434,11 +451,34 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 return IR_NO_VAL;
             }
 
+            if (is_str_lit) {
+                IrInstr* len_const = emit(f);
+                len_const->op      = IR_CONST_INT;
+                len_const->dst     = next_val(f);
+                len_const->type    = e->type;
+                len_const->ival    = e->len;
+                return len_const->dst;
+            }
+
+            if (is_array) {
+                IrInstr* len_const = emit(f);
+                len_const->op      = IR_CONST_INT;
+                len_const->dst     = next_val(f);
+                len_const->type    = e->type;
+                len_const->ival    = (long long)val_type->array_type.len;
+                return len_const->dst;
+            }
+
             IrVal fat_alloca = IR_NO_VAL;
             if (e->member_value->kind == AST_IDENT && vars) {
                 VarSlot* slot = ht_find(vars, e->member_value->ident);
-                if (slot && slot->ptr != IR_NO_VAL)
-                    fat_alloca = slot->ptr;
+                if (slot) {
+                    if (is_fat_ptr && slot->val != IR_NO_VAL) {
+                        fat_alloca = slot->val;
+                    } else if (slot->ptr != IR_NO_VAL) {
+                        fat_alloca = slot->ptr;
+                    }
+                }
             }
             if (fat_alloca == IR_NO_VAL)
                 fat_alloca = lower_expr(m, f, e->member_value, vars);
@@ -1061,228 +1101,266 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                 }
             }
             break;
-        case AST_VAR_ASSIGN: {
-            IrVal assign_val = lower_expr(m, f, s->assign_value, vars);
-            if (assign_val == IR_NO_VAL || !vars)
-                break;
+        case AST_ASSIGN: {
+            if (s->assign_target->kind == AST_IDENT) {
+                IrVal assign_val = lower_expr(m, f, s->assign_value, vars);
+                if (assign_val == IR_NO_VAL || !vars)
+                    break;
 
-            VarSlot* slot = ht_find(vars, s->assign_name);
+                VarSlot* slot = ht_find(vars, s->assign_target->ident);
 
-            IrVal new_val = assign_val;
-            if (s->assign_op != ASSIGN_EQ && slot) {
-                IrVal old_val = IR_NO_VAL;
-                if (slot->ptr != IR_NO_VAL) {
-                    IrInstr* ld  = emit(f);
-                    ld->op       = IR_LOAD;
-                    ld->dst      = next_val(f);
-                    ld->type     = s->type;
-                    ld->load_ptr = slot->ptr;
-                    old_val      = ld->dst;
-                } else {
-                    old_val = slot->val;
+                IrVal new_val = assign_val;
+                if (s->assign_op != ASSIGN_EQ && slot) {
+                    IrVal old_val = IR_NO_VAL;
+                    if (slot->ptr != IR_NO_VAL) {
+                        IrInstr* ld  = emit(f);
+                        ld->op       = IR_LOAD;
+                        ld->dst      = next_val(f);
+                        ld->type     = s->type;
+                        ld->load_ptr = slot->ptr;
+                        old_val      = ld->dst;
+                    } else {
+                        old_val = slot->val;
+                    }
+
+                    if (old_val != IR_NO_VAL) {
+                        IrInstr* i = emit(f);
+                        i->op      = IR_BINOP;
+                        i->dst     = next_val(f);
+                        i->type    = s->type;
+                        i->blhs    = old_val;
+                        i->brhs    = assign_val;
+
+                        switch (s->assign_op) {
+                            case ASSIGN_ADDEQ:
+                                i->bop = OP_ADD;
+                                break;
+                            case ASSIGN_SUBEQ:
+                                i->bop = OP_SUB;
+                                break;
+                            case ASSIGN_MULEQ:
+                                i->bop = OP_MUL;
+                                break;
+                            case ASSIGN_DIVEQ:
+                                i->bop = OP_DIV;
+                                break;
+                            case ASSIGN_MODEQ:
+                                i->bop = OP_MOD;
+                                break;
+                            case ASSIGN_BITANDEQ:
+                                i->bop = OP_BITAND;
+                                break;
+                            case ASSIGN_BITOREQ:
+                                i->bop = OP_BITOR;
+                                break;
+                            case ASSIGN_BITXOREQ:
+                                i->bop = OP_BITXOR;
+                                break;
+                            case ASSIGN_SHLEQ:
+                                i->bop = OP_SHL;
+                                break;
+                            case ASSIGN_SHREQ:
+                                i->bop = OP_SHR;
+                                break;
+                            case ASSIGN_LANDEQ:
+                                i->bop = OP_LAND;
+                                break;
+                            case ASSIGN_LOREQ:
+                                i->bop = OP_LOR;
+                                break;
+                            case ASSIGN_POWEQ:
+                                i->bop = OP_POW;
+                                break;
+                            default:
+                                break;
+                        }
+                        new_val = i->dst;
+                    }
                 }
 
-                if (old_val != IR_NO_VAL) {
-                    IrInstr* i = emit(f);
-                    i->op      = IR_BINOP;
-                    i->dst     = next_val(f);
-                    i->type    = s->type;
-                    i->blhs    = old_val;
-                    i->brhs    = assign_val;
+                if (slot && slot->ptr != IR_NO_VAL) {
+                    IrInstr* st   = emit(f);
+                    st->op        = IR_STORE;
+                    st->dst       = IR_NO_VAL;
+                    st->type      = s->type;
+                    st->store_ptr = slot->ptr;
+                    st->store_val = new_val;
+                    slot->val     = new_val;
+                } else {
+                    VarSlot* ns = slot ? slot : ht_put(vars, s->assign_target->ident);
+                    ns->val     = new_val;
+                    if (!slot)
+                        ns->ptr = IR_NO_VAL;
+                }
+            } else if (s->assign_target->kind == AST_INDEX) {
+                IrVal array      = IR_NO_VAL;
+                IrVal index      = lower_expr(m, f, s->assign_target->index, vars);
+                IrVal assign_val = lower_expr(m, f, s->assign_value, vars);
+
+                if (index == IR_NO_VAL || assign_val == IR_NO_VAL)
+                    break;
+
+                if (s->assign_target->array->kind == AST_IDENT && vars) {
+                    VarSlot* slot = ht_find(vars, s->assign_target->array->ident);
+                    if (slot && slot->ptr != IR_NO_VAL) {
+                        if (s->assign_target->array->type && s->assign_target->array->type->kind == TYPE_PTR) {
+                            IrInstr* ld  = emit(f);
+                            ld->op       = IR_LOAD;
+                            ld->dst      = next_val(f);
+                            ld->type     = s->assign_target->array->type;
+                            ld->load_ptr = slot->ptr;
+                            array        = ld->dst;
+                        } else {
+                            array = slot->ptr;
+                        }
+                    } else {
+                        array = lower_expr(m, f, s->assign_target->array, vars);
+                    }
+                } else {
+                    array = lower_expr(m, f, s->assign_target->array, vars);
+                }
+
+                if (array == IR_NO_VAL)
+                    break;
+
+                bool was_fat_assign = s->assign_target->array->type &&
+                                      s->assign_target->array->type->kind == TYPE_PTR &&
+                                      s->assign_target->array->type->ptr_type.is_fat;
+                if (was_fat_assign) {
+                    IrInstr* fp = emit(f);
+                    fp->op      = IR_FAT_PTR;
+                    fp->dst     = next_val(f);
+                    fp->type    = type_ptr(s->assign_target->array->type->ptr_type.elem_type, false);
+                    fp->src     = array;
+                    array       = fp->dst;
+                }
+
+                Type* elem_type = NULL;
+                if (s->assign_target->array->type && s->assign_target->array->type->kind == TYPE_ARRAY) {
+                    elem_type = s->assign_target->array->type->array_type.elem_type;
+                } else if (s->assign_target->array->type && s->assign_target->array->type->kind == TYPE_PTR) {
+                    elem_type = s->assign_target->array->type->ptr_type.elem_type;
+                }
+
+                int scale =
+                    elem_type ? type_bytes(elem_type) : (s->assign_value->type ? type_bytes(s->assign_value->type) : 8);
+
+                IrInstr* gep       = emit(f);
+                gep->op            = IR_GEP;
+                gep->dst           = next_val(f);
+                gep->type          = type_ptr(elem_type ? elem_type : s->assign_value->type, false);
+                gep->gep_base      = array;
+                gep->gep_idx       = index;
+                gep->gep_scale     = scale;
+                gep->gep_base_type = was_fat_assign ? type_ptr(s->assign_target->array->type->ptr_type.elem_type, false)
+                                                    : s->assign_target->array->type;
+
+                IrVal new_val = assign_val;
+                if (s->assign_op != ASSIGN_EQ) {
+                    IrInstr* ld   = emit(f);
+                    ld->op        = IR_LOAD;
+                    ld->dst       = next_val(f);
+                    ld->type      = elem_type ? elem_type : s->assign_value->type;
+                    ld->load_ptr  = gep->dst;
+                    IrVal old_val = ld->dst;
+
+                    IrInstr* binop = emit(f);
+                    binop->op      = IR_BINOP;
+                    binop->dst     = next_val(f);
+                    binop->type    = elem_type ? elem_type : s->assign_value->type;
+                    binop->blhs    = old_val;
+                    binop->brhs    = assign_val;
 
                     switch (s->assign_op) {
                         case ASSIGN_ADDEQ:
-                            i->bop = OP_ADD;
+                            binop->bop = OP_ADD;
                             break;
                         case ASSIGN_SUBEQ:
-                            i->bop = OP_SUB;
+                            binop->bop = OP_SUB;
                             break;
                         case ASSIGN_MULEQ:
-                            i->bop = OP_MUL;
+                            binop->bop = OP_MUL;
                             break;
                         case ASSIGN_DIVEQ:
-                            i->bop = OP_DIV;
+                            binop->bop = OP_DIV;
                             break;
                         case ASSIGN_MODEQ:
-                            i->bop = OP_MOD;
+                            binop->bop = OP_MOD;
                             break;
                         case ASSIGN_BITANDEQ:
-                            i->bop = OP_BITAND;
+                            binop->bop = OP_BITAND;
                             break;
                         case ASSIGN_BITOREQ:
-                            i->bop = OP_BITOR;
+                            binop->bop = OP_BITOR;
                             break;
                         case ASSIGN_BITXOREQ:
-                            i->bop = OP_BITXOR;
+                            binop->bop = OP_BITXOR;
                             break;
                         case ASSIGN_SHLEQ:
-                            i->bop = OP_SHL;
+                            binop->bop = OP_SHL;
                             break;
                         case ASSIGN_SHREQ:
-                            i->bop = OP_SHR;
+                            binop->bop = OP_SHR;
                             break;
                         case ASSIGN_LANDEQ:
-                            i->bop = OP_LAND;
+                            binop->bop = OP_LAND;
                             break;
                         case ASSIGN_LOREQ:
-                            i->bop = OP_LOR;
+                            binop->bop = OP_LOR;
                             break;
                         case ASSIGN_POWEQ:
-                            i->bop = OP_POW;
+                            binop->bop = OP_POW;
                             break;
                         default:
                             break;
                     }
-                    new_val = i->dst;
+                    new_val = binop->dst;
                 }
-            }
 
-            if (slot && slot->ptr != IR_NO_VAL) {
                 IrInstr* st   = emit(f);
                 st->op        = IR_STORE;
                 st->dst       = IR_NO_VAL;
                 st->type      = s->type;
-                st->store_ptr = slot->ptr;
+                st->store_ptr = gep->dst;
                 st->store_val = new_val;
-                slot->val     = new_val;
-            } else {
-                VarSlot* ns = slot ? slot : ht_put(vars, s->assign_name);
-                ns->val     = new_val;
-                if (!slot)
-                    ns->ptr = IR_NO_VAL;
-            }
-            break;
-        }
-        case AST_INDEX_ASSIGN: {
-            IrVal array      = IR_NO_VAL;
-            IrVal index      = lower_expr(m, f, s->idx_index, vars);
-            IrVal assign_val = lower_expr(m, f, s->idx_assign_value, vars);
+            } else if (s->assign_target->kind == AST_MEMBER) {
+                IrVal assign_val = lower_expr(m, f, s->assign_value, vars);
+                if (assign_val == IR_NO_VAL)
+                    break;
 
-            if (index == IR_NO_VAL || assign_val == IR_NO_VAL)
-                break;
+                Type* member_value_type = s->assign_target->member_value->type;
+                bool is_fat_ptr = member_value_type && member_value_type->kind == TYPE_PTR && 
+                                  member_value_type->ptr_type.is_fat;
+                
+                if (!is_fat_ptr)
+                    break;
 
-            if (s->idx_array->kind == AST_IDENT && vars) {
-                VarSlot* slot = ht_find(vars, s->idx_array->ident);
-                if (slot && slot->ptr != IR_NO_VAL) {
-                    if (s->idx_array->type && s->idx_array->type->kind == TYPE_PTR) {
-                        IrInstr* ld  = emit(f);
-                        ld->op       = IR_LOAD;
-                        ld->dst      = next_val(f);
-                        ld->type     = s->idx_array->type;
-                        ld->load_ptr = slot->ptr;
-                        array        = ld->dst;
-                    } else {
-                        array = slot->ptr;
+                IrVal fat_ptr = IR_NO_VAL;
+                if (s->assign_target->member_value->kind == AST_IDENT && vars) {
+                    VarSlot* slot = ht_find(vars, s->assign_target->member_value->ident);
+                    if (slot) {
+                        if (is_fat_ptr && slot->val != IR_NO_VAL) {
+                            fat_ptr = slot->val;
+                        } else if (slot->ptr != IR_NO_VAL) {
+                            fat_ptr = slot->ptr;
+                        }
                     }
-                } else {
-                    array = lower_expr(m, f, s->idx_array, vars);
                 }
+                if (fat_ptr == IR_NO_VAL)
+                    fat_ptr = lower_expr(m, f, s->assign_target->member_value, vars);
+
+                if (fat_ptr == IR_NO_VAL)
+                    break;
+
+                IrInstr* set_len = emit(f);
+                set_len->op      = IR_FAT_SET_LEN;
+                set_len->dst     = IR_NO_VAL;
+                set_len->type    = s->assign_value->type;
+                set_len->store_ptr = fat_ptr;
+                set_len->store_val = assign_val;
             } else {
-                array = lower_expr(m, f, s->idx_array, vars);
+                ICE("unsupported assignment target");
             }
-
-            if (array == IR_NO_VAL)
-                break;
-
-            bool was_fat_assign =
-                s->idx_array->type && s->idx_array->type->kind == TYPE_PTR && s->idx_array->type->ptr_type.is_fat;
-            if (was_fat_assign) {
-                IrInstr* fp = emit(f);
-                fp->op      = IR_FAT_PTR;
-                fp->dst     = next_val(f);
-                fp->type    = type_ptr(s->idx_array->type->ptr_type.elem_type, false);
-                fp->src     = array;
-                array       = fp->dst;
-            }
-
-            Type* elem_type = NULL;
-            if (s->idx_array->type && s->idx_array->type->kind == TYPE_ARRAY) {
-                elem_type = s->idx_array->type->array_type.elem_type;
-            } else if (s->idx_array->type && s->idx_array->type->kind == TYPE_PTR) {
-                elem_type = s->idx_array->type->ptr_type.elem_type;
-            }
-
-            int scale = elem_type ? type_bytes(elem_type)
-                                  : (s->idx_assign_value->type ? type_bytes(s->idx_assign_value->type) : 8);
-
-            IrInstr* gep   = emit(f);
-            gep->op        = IR_GEP;
-            gep->dst       = next_val(f);
-            gep->type      = type_ptr(elem_type ? elem_type : s->idx_assign_value->type, false);
-            gep->gep_base  = array;
-            gep->gep_idx   = index;
-            gep->gep_scale = scale;
-            gep->gep_base_type =
-                was_fat_assign ? type_ptr(s->idx_array->type->ptr_type.elem_type, false) : s->idx_array->type;
-
-            IrVal new_val = assign_val;
-            if (s->idx_assign_op != ASSIGN_EQ) {
-                IrInstr* ld   = emit(f);
-                ld->op        = IR_LOAD;
-                ld->dst       = next_val(f);
-                ld->type      = elem_type ? elem_type : s->idx_assign_value->type;
-                ld->load_ptr  = gep->dst;
-                IrVal old_val = ld->dst;
-
-                IrInstr* binop = emit(f);
-                binop->op      = IR_BINOP;
-                binop->dst     = next_val(f);
-                binop->type    = elem_type ? elem_type : s->idx_assign_value->type;
-                binop->blhs    = old_val;
-                binop->brhs    = assign_val;
-
-                switch (s->idx_assign_op) {
-                    case ASSIGN_ADDEQ:
-                        binop->bop = OP_ADD;
-                        break;
-                    case ASSIGN_SUBEQ:
-                        binop->bop = OP_SUB;
-                        break;
-                    case ASSIGN_MULEQ:
-                        binop->bop = OP_MUL;
-                        break;
-                    case ASSIGN_DIVEQ:
-                        binop->bop = OP_DIV;
-                        break;
-                    case ASSIGN_MODEQ:
-                        binop->bop = OP_MOD;
-                        break;
-                    case ASSIGN_BITANDEQ:
-                        binop->bop = OP_BITAND;
-                        break;
-                    case ASSIGN_BITOREQ:
-                        binop->bop = OP_BITOR;
-                        break;
-                    case ASSIGN_BITXOREQ:
-                        binop->bop = OP_BITXOR;
-                        break;
-                    case ASSIGN_SHLEQ:
-                        binop->bop = OP_SHL;
-                        break;
-                    case ASSIGN_SHREQ:
-                        binop->bop = OP_SHR;
-                        break;
-                    case ASSIGN_LANDEQ:
-                        binop->bop = OP_LAND;
-                        break;
-                    case ASSIGN_LOREQ:
-                        binop->bop = OP_LOR;
-                        break;
-                    case ASSIGN_POWEQ:
-                        binop->bop = OP_POW;
-                        break;
-                    default:
-                        break;
-                }
-                new_val = binop->dst;
-            }
-
-            IrInstr* st   = emit(f);
-            st->op        = IR_STORE;
-            st->dst       = IR_NO_VAL;
-            st->type      = s->idx_assign_value->type;
-            st->store_ptr = gep->dst;
-            st->store_val = new_val;
             break;
         }
         default:

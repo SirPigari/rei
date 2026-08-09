@@ -13,6 +13,8 @@ enum StrPrefixFlags {
     /* absence of C and B => default "..." => []u8 (fat pointer / slice)         */
 };
 
+#define TK_DOUBLEDICK TK_COLONEQ
+
 typedef enum {
     TK_EOF = 0,
 
@@ -78,6 +80,7 @@ typedef enum {
     TK_SHLEQ,      /* <<= */
     TK_SHREQ,      /* >>= */
     TK_STARSTAREQ, /* **= */
+    TK_COLONEQ,    /* :=  */
 
     TK_BANG,       /* !   */
     TK_LAND,       /* &&  */

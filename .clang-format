@@ -68,4 +68,6 @@ MaxEmptyLinesToKeep: 1
 KeepEmptyLinesAtTheStartOfBlocks: false
 ReflowComments: true
 InsertTrailingCommas: None
+
+InsertNewlineAtEOF: true
 ---

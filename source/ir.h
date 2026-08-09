@@ -86,6 +86,7 @@ typedef struct {
     int      instr_cap;
     int      next_val;
     bool     is_extern;
+    bool     is_public;
     bool     no_mangle;
 } IrFunc;
 
