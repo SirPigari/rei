@@ -69,6 +69,7 @@ typedef enum {
     AST_BLOCK_STMT,  /* { stmts }                         */
     AST_IF_STMT,     /* if (cond) then [else]             */
     AST_WHILE_STMT,  /* while (cond) body                 */
+    AST_FOR_STMT,    /* for val: iterable body            */
     AST_ASSIGN,      /* target = expr;                    */
 
     AST_INT_LIT,     /* 42, 42u8, 42i32                   */
@@ -79,6 +80,7 @@ typedef enum {
     AST_IDENT,       /* foo                               */
     AST_INDEX,       /* arr[idx]                          */
     AST_MEMBER,      /* value.member                      */
+    AST_RANGE,       /* start..end:step                   */
     AST_CALL,        /* foo(args...)                      */
     AST_BINOP,       /* lhs OP rhs                        */
     AST_UNOP,        /* OP operand                        */
@@ -190,17 +192,18 @@ struct AstNode {
             AstNode* while_body;
         };
 
+        /* AST_FOR_STMT */
+        struct {
+            AstNode* for_val;
+            AstNode* for_iterable;
+            AstNode* for_body;
+        };
+
         /* AST_ASSIGN */
         struct {
             AstNode* assign_target; /* AST_IDENT or AST_INDEX */
             AssignOp assign_op;
             AstNode* assign_value;
-        };
-
-        /* AST_MEMBER */
-        struct {
-            AstNode* member_value;
-            char*    member_name;
         };
 
         /* AST_INT_LIT */
@@ -240,6 +243,23 @@ struct AstNode {
         struct {
             AstNode* array;
             AstNode* index;
+        };
+
+        /* AST_MEMBER */
+        struct {
+            AstNode* member_value;
+            char*    member_name;
+        };
+
+        /* AST_RANGE */
+        struct {
+            AstNode* range_start;
+            AstNode* range_end;
+            AstNode* range_step; /* NULL = default step (eg 1) */
+            enum {
+                RANGE_INCLUSIVE,
+                RANGE_END_EXCLUSIVE,
+            } range_kind;
         };
 
         /* AST_CALL */

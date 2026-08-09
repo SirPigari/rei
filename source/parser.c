@@ -427,12 +427,12 @@ static AstNode* parse_stmt(Lexer* l) {
             expect(l, TK_SEMI);
             return n;
         }
-        
+
         AstNode* expr = ast_node(AST_IDENT, name_tok.loc);
         expr->ident   = tok_str(name_tok);
-        
+
         Token pk_postfix = lexer_peek(l);
-        
+
         while (pk_postfix.kind == TK_LBRACKET || pk_postfix.kind == TK_LPAREN) {
             if (pk_postfix.kind == TK_LBRACKET) {
                 lexer_next(l);
@@ -443,14 +443,14 @@ static AstNode* parse_stmt(Lexer* l) {
                 expr = idx;
             } else if (pk_postfix.kind == TK_LPAREN) {
                 lexer_next(l);
-                AstNode* call   = ast_node(AST_CALL, pk_postfix.loc);
+                AstNode* call = ast_node(AST_CALL, pk_postfix.loc);
                 if (expr->kind == AST_IDENT) {
                     call->callee = expr->ident;
                 } else {
                     diag_emit(DIAG_ERROR, pk_postfix.loc, "only identifiers can be called directly");
                     call->callee = "";
                 }
-                int cap      = 8;
+                int cap         = 8;
                 call->arg_count = 0;
                 call->args      = malloc(cap * sizeof(AstNode*));
                 while (lexer_peek(l).kind != TK_RPAREN && lexer_peek(l).kind != TK_EOF) {
@@ -467,17 +467,17 @@ static AstNode* parse_stmt(Lexer* l) {
             }
             pk_postfix = lexer_peek(l);
         }
-        
+
         while (pk_postfix.kind == TK_DOT) {
             lexer_next(l);
-            Token    member_tok = expect(l, TK_IDENT);
-            AstNode* member     = ast_node(AST_MEMBER, pk_postfix.loc);
+            Token    member_tok  = expect(l, TK_IDENT);
+            AstNode* member      = ast_node(AST_MEMBER, pk_postfix.loc);
             member->member_value = expr;
             member->member_name  = tok_str(member_tok);
-            expr                = member;
-            pk_postfix          = lexer_peek(l);
+            expr                 = member;
+            pk_postfix           = lexer_peek(l);
         }
-        
+
         if (pk_postfix.kind == TK_PLUSPLUS) {
             lexer_next(l);
             AstNode* postinc = ast_node(AST_UNOP, pk_postfix.loc);
@@ -491,19 +491,18 @@ static AstNode* parse_stmt(Lexer* l) {
             postdec->operand = expr;
             expr             = postdec;
         }
-        
+
         Token assign_tok = lexer_peek(l);
-        bool is_assign_op = (assign_tok.kind == TK_EQ || assign_tok.kind == TK_PLUSEQ ||
-                             assign_tok.kind == TK_MINUSEQ || assign_tok.kind == TK_STAREQ ||
-                             assign_tok.kind == TK_SLASHEQ || assign_tok.kind == TK_PERCENTEQ ||
-                             assign_tok.kind == TK_BITANDEQ || assign_tok.kind == TK_BITOREQ ||
-                             assign_tok.kind == TK_BITXOREQ || assign_tok.kind == TK_SHLEQ ||
-                             assign_tok.kind == TK_SHREQ || assign_tok.kind == TK_STARSTAREQ ||
-                             assign_tok.kind == TK_LANDEQ || assign_tok.kind == TK_LOREQ);
-        
+        bool  is_assign_op =
+            (assign_tok.kind == TK_EQ || assign_tok.kind == TK_PLUSEQ || assign_tok.kind == TK_MINUSEQ ||
+             assign_tok.kind == TK_STAREQ || assign_tok.kind == TK_SLASHEQ || assign_tok.kind == TK_PERCENTEQ ||
+             assign_tok.kind == TK_BITANDEQ || assign_tok.kind == TK_BITOREQ || assign_tok.kind == TK_BITXOREQ ||
+             assign_tok.kind == TK_SHLEQ || assign_tok.kind == TK_SHREQ || assign_tok.kind == TK_STARSTAREQ ||
+             assign_tok.kind == TK_LANDEQ || assign_tok.kind == TK_LOREQ);
+
         if (is_assign_op) {
-            Token    op_tok = lexer_next(l);
-            AstNode* n      = ast_node(AST_ASSIGN, expr->loc);
+            Token    op_tok  = lexer_next(l);
+            AstNode* n       = ast_node(AST_ASSIGN, expr->loc);
             n->assign_target = expr;
 
             switch (op_tok.kind) {
@@ -557,7 +556,7 @@ static AstNode* parse_stmt(Lexer* l) {
             expect(l, TK_SEMI);
             return n;
         }
-        
+
         AstNode* n = ast_node(AST_EXPR_STMT, expr->loc);
         n->expr    = expr;
         expect(l, TK_SEMI);

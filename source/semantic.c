@@ -902,8 +902,8 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                         it          = s->var_type;
                     }
 
-                    if (!types_compatible_with_decay(it, s->var_type) &&
-                        !types_assignable(it, s->var_type) && !is_error_type(it)) {
+                    if (!types_compatible_with_decay(it, s->var_type) && !types_assignable(it, s->var_type) &&
+                        !is_error_type(it)) {
                         char is[64], vs[64];
                         diag_emit(DIAG_ERROR,
                                   s->init->loc,
@@ -920,7 +920,7 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                 ICE("variable declaration '%s' requires either a type annotation or an initializer", s->var_name);
                 scope_type = type_void();
             }
-            s->type = s->var_type;
+            s->type               = s->var_type;
             SymbolEntry* existing = scope_lookup(sc, s->var_name);
             if (existing && existing->decl != NULL) {
                 diag_emit(DIAG_ERROR, s->loc, "redefinition of variable '%s'", s->var_name);
@@ -1067,7 +1067,7 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                     break;
                 }
 
-                if (strcmp(s->assign_target->member_name, "len") != 0 && 
+                if (strcmp(s->assign_target->member_name, "len") != 0 &&
                     strcmp(s->assign_target->member_name, "length") != 0 &&
                     strcmp(s->assign_target->member_name, "count") != 0) {
                     diag_emit(DIAG_ERROR, s->loc, "fat pointer only has writable member 'len'");
@@ -1076,7 +1076,7 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                 }
 
                 Type* target_type = type_abstract_int();
-                Type* vt = check_expr_hint(s->assign_value, sc, target_type);
+                Type* vt          = check_expr_hint(s->assign_value, sc, target_type);
 
                 if (!types_assignable(vt, target_type)) {
                     char vt_str[64];
@@ -1092,7 +1092,8 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
 
                 s->type = target_type;
             } else {
-                diag_emit(DIAG_ERROR, s->loc, "assignment target must be a variable, array index, or fat pointer member");
+                diag_emit(
+                    DIAG_ERROR, s->loc, "assignment target must be a variable, array index, or fat pointer member");
                 check_expr(s->assign_value, sc);
             }
             break;

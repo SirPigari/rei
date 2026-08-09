@@ -184,7 +184,7 @@ static Token lex_number(Lexer* l) {
     } else {
         while (isdigit((unsigned char)*l->cur))
             advance(l);
-        if (*l->cur == '.') {
+        if (*l->cur == '.' && isdigit((unsigned char)*(l->cur + 1))) {
             is_float = true;
             advance(l);
             while (isdigit((unsigned char)*l->cur))

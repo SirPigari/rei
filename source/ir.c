@@ -272,10 +272,10 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
             Type*  ptype  = type_ptr(etype ? etype : type_number(TYPE_INT, 64, false), false);
             int    escale = etype ? type_bytes(etype) : 8;
 
-            IrInstr* arr = emit(f);
-            arr->op      = IR_ARRAY_INIT;
-            arr->dst     = next_val(f);
-            arr->type    = ptype;
+            IrInstr* arr      = emit(f);
+            arr->op           = IR_ARRAY_INIT;
+            arr->dst          = next_val(f);
+            arr->type         = ptype;
             int bytes_needed  = (int)n * escale;
             arr->alloca_slots = bytes_needed ? (bytes_needed + 7) / 8 : 1;
 
@@ -435,10 +435,10 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
             return ld->dst;
         }
         case AST_MEMBER: {
-            Type* val_type = e->member_value->type;
-            bool is_fat_ptr = val_type && val_type->kind == TYPE_PTR && val_type->ptr_type.is_fat;
-            bool is_array = val_type && val_type->kind == TYPE_ARRAY;
-            bool is_str_lit = e->member_value->kind == AST_STRING_LIT;
+            Type* val_type   = e->member_value->type;
+            bool  is_fat_ptr = val_type && val_type->kind == TYPE_PTR && val_type->ptr_type.is_fat;
+            bool  is_array   = val_type && val_type->kind == TYPE_ARRAY;
+            bool  is_str_lit = e->member_value->kind == AST_STRING_LIT;
 
             if (!is_fat_ptr && !is_array && !is_str_lit) {
                 ICE("member access only valid on fat pointers, arrays, or string literals");
@@ -1329,9 +1329,9 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                     break;
 
                 Type* member_value_type = s->assign_target->member_value->type;
-                bool is_fat_ptr = member_value_type && member_value_type->kind == TYPE_PTR && 
-                                  member_value_type->ptr_type.is_fat;
-                
+                bool  is_fat_ptr =
+                    member_value_type && member_value_type->kind == TYPE_PTR && member_value_type->ptr_type.is_fat;
+
                 if (!is_fat_ptr)
                     break;
 
@@ -1352,10 +1352,10 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                 if (fat_ptr == IR_NO_VAL)
                     break;
 
-                IrInstr* set_len = emit(f);
-                set_len->op      = IR_FAT_SET_LEN;
-                set_len->dst     = IR_NO_VAL;
-                set_len->type    = s->assign_value->type;
+                IrInstr* set_len   = emit(f);
+                set_len->op        = IR_FAT_SET_LEN;
+                set_len->dst       = IR_NO_VAL;
+                set_len->type      = s->assign_value->type;
                 set_len->store_ptr = fat_ptr;
                 set_len->store_val = assign_val;
             } else {
