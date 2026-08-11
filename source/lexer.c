@@ -493,6 +493,13 @@ static Token lex_one(Lexer* l) {
         case '.':
             if (*l->cur == '.') {
                 advance(l);
+                if (*l->cur == '<') {
+                    advance(l);
+                    return make_tok(l, TK_DOTDOTLESS, loc, start);
+                } else if (*l->cur == '.') {
+                    advance(l);
+                    return make_tok(l, TK_DOTDOTDOT, loc, start);
+                }
                 return make_tok(l, TK_DOTDOT, loc, start);
             }
             return make_tok(l, TK_DOT, loc, start);
@@ -712,8 +719,12 @@ static Token lex_one(Lexer* l) {
             t.kind = TK_ELSE;
         else if (t.len == 5 && memcmp(start, "while", 5) == 0)
             t.kind = TK_WHILE;
+        else if (t.len == 3 && memcmp(start, "for", 3) == 0)
+            t.kind = TK_FOR;
         else if (t.len == 2 && memcmp(start, "as", 2) == 0)
             t.kind = TK_AS;
+        else if (t.len == 7 && memcmp(start, "nullptr", 7) == 0)
+            t.kind = TK_NULLPTR;
         return t;
     }
 
@@ -766,8 +777,12 @@ const char* token_kind_str(TokenKind k) {
             return "'else'";
         case TK_WHILE:
             return "'while'";
+        case TK_FOR:
+            return "'for'";
         case TK_AS:
             return "'as'";
+        case TK_NULLPTR:
+            return "'nullptr'";
         case TK_LPAREN:
             return "'('";
         case TK_RPAREN:
@@ -794,6 +809,10 @@ const char* token_kind_str(TokenKind k) {
             return "'.'";
         case TK_DOTDOT:
             return "'..'";
+        case TK_DOTDOTLESS:
+            return "'..<'";
+        case TK_DOTDOTDOT:
+            return "'...'";
         case TK_QUESTION:
             return "'?'";
         case TK_PLUS:

@@ -807,6 +807,77 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
             return e->type;
         }
 
+        case AST_RANGE: {
+            Type* start_type = check_expr(e->range_start, sc);
+            Type* end_type   = check_expr(e->range_end, sc);
+
+            if (start_type && end_type) {
+                if (!types_equal(start_type, end_type)) {
+                    if (!is_abstract_int(start_type) && !is_abstract_int(end_type)) {
+                        char st[64], et[64];
+                        diag_emit(DIAG_ERROR,
+                                  e->loc,
+                                  "range bounds must have same type, got %s and %s",
+                                  type_str(start_type, st, sizeof(st)),
+                                  type_str(end_type, et, sizeof(et)));
+                    }
+                }
+            }
+
+            bool is_float_range = start_type && start_type->kind == TYPE_FLOAT;
+
+            if (is_float_range && !e->range_step) {
+                diag_emit(DIAG_ERROR, e->loc, "float ranges require an explicit step (e.g., 0.2..1.0:0.1)");
+            }
+
+            if (!e->range_step) {
+                if (e->range_start->kind == AST_INT_LIT && e->range_end->kind == AST_INT_LIT) {
+                    if (e->range_start->ival > e->range_end->ival) {
+                        diag_emit(DIAG_WARN,
+                                  e->loc,
+                                  "range %lld..%lld:1 does not iterate (start > end). Use negative step like -1 "
+                                  "(start..end:step) to iterate backwards.",
+                                  e->range_start->ival,
+                                  e->range_end->ival);
+                    }
+                }
+            }
+
+            if (e->range_step) {
+                Type* step_type = check_expr(e->range_step, sc);
+                if (step_type) {
+                    if (is_float_range && step_type->kind != TYPE_FLOAT) {
+                        char st[64];
+                        diag_emit(DIAG_ERROR,
+                                  e->range_step->loc,
+                                  "float range step must be float, got %s",
+                                  type_str(step_type, st, sizeof(st)));
+                    } else if (!is_float_range && step_type->kind != TYPE_INT) {
+                        char st[64];
+                        diag_emit(DIAG_ERROR,
+                                  e->range_step->loc,
+                                  "integer range step must be integer, got %s",
+                                  type_str(step_type, st, sizeof(st)));
+                    } else if (e->range_start->kind == AST_INT_LIT && e->range_end->kind == AST_INT_LIT &&
+                               e->range_step->kind == AST_INT_LIT) {
+                        if (e->range_start->ival > e->range_end->ival && e->range_step->ival > 0) {
+                            diag_emit(DIAG_WARN,
+                                      e->loc,
+                                      "range %lld..%lld:%lld does not iterate (start > end with positive step). Use "
+                                      "negative step like -%lld.",
+                                      e->range_start->ival,
+                                      e->range_end->ival,
+                                      e->range_step->ival,
+                                      e->range_step->ival);
+                        }
+                    }
+                }
+            }
+
+            e->type = start_type ? start_type : end_type;
+            return e->type;
+        }
+
         default:
             ICE("unexpected node in expression context");
             return type_void();
@@ -882,6 +953,51 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                           type_str(ct, ts, sizeof(ts)));
             }
             check_stmt(s->while_body, sc, fn);
+            break;
+        }
+
+        case AST_FOR_STMT: {
+            Type* iter_type = check_expr(s->for_iterable, sc);
+
+            if (!iter_type) {
+                diag_emit(DIAG_ERROR, s->for_iterable->loc, "iterable type cannot be inferred");
+                /* im too lazy to rewrite it properly lets hope the compiler optimizes it away */
+            } else if (iter_type->kind == TYPE_ARRAY) {
+            } else if (iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat) {
+            } else if (iter_type->kind == TYPE_INT || iter_type->kind == TYPE_FLOAT) {
+            } else {
+                char ts[64];
+                diag_emit(DIAG_ERROR,
+                          s->for_iterable->loc,
+                          "can only iterate over arrays, fat pointers, or ranges, got %s",
+                          type_str(iter_type, ts, sizeof(ts)));
+            }
+
+            if (s->for_val && s->for_val->kind == AST_IDENT) {
+                Scope* loop_scope = scope_new(sc);
+
+                Type* elem_type = NULL;
+                if (iter_type && iter_type->kind == TYPE_ARRAY) {
+                    elem_type = iter_type->array_type.elem_type;
+                } else if (iter_type && iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat) {
+                    elem_type = iter_type->ptr_type.elem_type;
+                } else if (s->for_iterable->kind == AST_RANGE && iter_type &&
+                           (iter_type->kind == TYPE_INT || iter_type->kind == TYPE_FLOAT)) {
+                    elem_type = iter_type;
+                } else {
+                    elem_type = type_number(TYPE_INT, 64, false);
+                }
+
+                AstNode* var_decl  = ast_node(AST_VAR_DECL, s->for_val->loc);
+                var_decl->var_name = s->for_val->ident;
+                var_decl->var_type = elem_type;
+                var_decl->init     = NULL;
+                scope_add(loop_scope, var_decl->var_name, var_decl, elem_type);
+
+                check_stmt(s->for_body, loop_scope, fn);
+            } else {
+                check_stmt(s->for_body, sc, fn);
+            }
             break;
         }
 

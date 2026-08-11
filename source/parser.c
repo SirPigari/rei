@@ -343,8 +343,30 @@ PARSE_BINOP(parse_bitwise_or, parse_bitwise_xor, case TK_BITOR : n_op = OP_BITOR
 PARSE_BINOP(parse_logical_and, parse_bitwise_or, case TK_LAND : n_op = OP_LAND; break;)
 PARSE_BINOP(parse_logical_or, parse_logical_and, case TK_LOR : n_op = OP_LOR; break;)
 
+static AstNode* parse_range(Lexer* l) {
+    AstNode* start = parse_logical_or(l);
+
+    if (lexer_peek(l).kind == TK_DOTDOT || lexer_peek(l).kind == TK_DOTDOTLESS) {
+        Token    range_op = lexer_next(l);
+        AstNode* n        = ast_node(AST_RANGE, range_op.loc);
+        n->range_start    = start;
+        n->range_end      = parse_logical_or(l);
+        n->range_step     = NULL;
+        n->range_kind     = (range_op.kind == TK_DOTDOT) ? RANGE_INCLUSIVE : RANGE_END_EXCLUSIVE;
+
+        if (lexer_peek(l).kind == TK_COLON) {
+            lexer_next(l);
+            n->range_step = parse_logical_or(l);
+        }
+
+        return n;
+    }
+
+    return start;
+}
+
 static AstNode* parse_expr(Lexer* l) {
-    return parse_logical_or(l);
+    return parse_range(l);
 }
 
 static AstNode* parse_stmt(Lexer* l) {
@@ -382,6 +404,32 @@ static AstNode* parse_stmt(Lexer* l) {
             AstNode* n         = ast_node(AST_WHILE_STMT, while_tok.loc);
             n->while_cond      = parse_expr(l);
             n->while_body      = parse_stmt(l);
+            return n;
+        } break;
+        case TK_FOR: {
+            Token    for_tok = lexer_next(l);
+            AstNode* n       = ast_node(AST_FOR_STMT, for_tok.loc);
+
+            Token next = lexer_peek(l);
+            if (next.kind == TK_IDENT && lexer_peek(l).kind != TK_IDENT) {
+                diag_emit(DIAG_ERROR, next.loc, "unexpected token in for loop");
+                n->for_val = NULL;
+            } else if (next.kind == TK_IDENT) {
+                Token var_tok     = lexer_next(l);
+                n->for_val        = ast_node(AST_IDENT, var_tok.loc);
+                n->for_val->ident = tok_str(var_tok);
+
+                if (lexer_peek(l).kind == TK_COLON) {
+                    lexer_next(l);
+                } else {
+                    diag_emit(DIAG_ERROR, lexer_peek(l).loc, "expected ':' in for loop");
+                }
+            } else {
+                n->for_val = NULL;
+            }
+
+            n->for_iterable = parse_expr(l);
+            n->for_body     = parse_stmt(l);
             return n;
         } break;
         case TK_RETURN: {
@@ -581,7 +629,7 @@ static void parse_params(Lexer* l, Param** out, int* count) {
 
         Token first = lexer_peek(l);
 
-        if (first.kind == TK_DOTDOT) {
+        if (first.kind == TK_DOTDOTDOT) {
             Location loc = first.loc;
             lexer_next(l);
 
@@ -598,6 +646,10 @@ static void parse_params(Lexer* l, Param** out, int* count) {
                 params[*count].is_variadic = true;
                 params[*count].loc         = loc;
             }
+        } else if (first.kind == TK_DOTDOT) {
+            lexer_next(l);
+            diag_emit(DIAG_ERROR, first.loc, "unexpected '..' in parameter list");
+            diag_emit(DIAG_NOTE, first.loc, "use '...' for variadic parameters ('..' was the old way)");
         } else if (first.kind == TK_IDENT) {
             lexer_next(l);
             if (lexer_peek(l).kind == TK_COLON) {

@@ -26,6 +26,7 @@ typedef enum {
     IR_FAT_LEN,     /* v = fat.len       -- extract length from fat pointer alloca */
     IR_FAT_SET_LEN, /* fat.len = val     -- store length into fat pointer alloca */
     IR_CAST,        /* v = (type)src     -- numeric type conversion */
+    IR_SELECT,      /* v = cond ? true_val : false_val  -- ternary select */
 } IrOpcode;
 
 typedef struct {
@@ -72,6 +73,11 @@ typedef struct {
         struct {
             IrVal cast_src;
             Type* cast_from_type; /* source type; i->type is the destination type */
+        };
+        struct {
+            IrVal sel_cond;
+            IrVal sel_true_val;
+            IrVal sel_false_val;
         };
     };
 } IrInstr;

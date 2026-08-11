@@ -11,7 +11,11 @@
 #define REI_FUNC_PREFIX "rei__"
 
 #define MAX_ARGREGS 6
+#define MAX_XMMREGS 8
+
 static const char* ARGREGS[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+
+static const char* XMMREGS[] = {"xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"};
 
 typedef struct {
     int offset;
@@ -32,7 +36,8 @@ static int slot_of(SlotMap* sm, IrVal v) {
 }
 
 static void alloc_slot(SlotMap* sm, IrVal v, int size) {
-    sm->stack_size += size;
+    int aligned_size = (size + 7) & ~7;
+    sm->stack_size += aligned_size;
     int* offset_ptr = ht_find_or_put(&sm->offsets, v);
     *offset_ptr     = -(int)sm->stack_size;
 }
@@ -61,9 +66,9 @@ static void L(FILE* out, const char* fmt, ...) {
 
 static const char* mem(int offset, char* buf) {
     if (offset < 0)
-        sprintf(buf, "[rbp - %d]", -offset);
+        sprintf(buf, "[%s - %d]", "rbp", -offset);
     else
-        sprintf(buf, "[rbp + %d]", offset);
+        sprintf(buf, "[%s + %d]", "rbp", offset);
     return buf;
 }
 
@@ -321,8 +326,8 @@ static void emit_store_slot(FILE* out, int bytes, const char* mem_expr) {
 
 static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
     fprintf(out, "%s:\n", symmap_lookup(sm, f->name));
-    L(out, "push rbp");
-    L(out, "mov rbp, rsp");
+    L(out, "push %s", "rbp");
+    L(out, "mov %s, %s", "rbp", "rsp");
 
     SlotMap slotmap = {0};
     for (int ii = 0; ii < f->instr_count; ii++) {
@@ -334,7 +339,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             if (ins->op == IR_ALLOCA || ins->op == IR_ARRAY_INIT) {
                 slotmap.stack_size += ins->alloca_slots * 8;
                 int* offset_ptr = ht_find_or_put(&slotmap.offsets, ins->dst);
-                *offset_ptr     = -(int)slotmap.stack_size;
+                *offset_ptr     = -(int)(slotmap.stack_size - ins->alloca_slots * 8 + 8);
                 mark_alloca(&slotmap, ins->dst);
             } else if (ins->op == IR_CONST_INT) {
                 *ht_put(&slotmap.const_vals, ins->dst) = ins->ival;
@@ -345,12 +350,13 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 } u;
                 u.d                                    = ins->fval;
                 *ht_put(&slotmap.const_vals, ins->dst) = u.ll;
+            } else if (ins->op == IR_STRING) {
             } else {
                 if (ht_find(&slotmap.offsets, ins->dst))
                     continue;
                 int size = type_bytes(ins->type);
-                if (ins->op == IR_PARAM && ins->type && ins->type->kind == TYPE_PTR && ins->type->ptr_type.is_fat) {
-                    size = 16;
+                if (ins->type && ins->type->kind == TYPE_PTR && ins->type->ptr_type.is_fat) {
+                    size = 40;
                 }
                 alloc_slot(&slotmap, ins->dst, size);
             }
@@ -358,7 +364,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
     }
 
     if (slotmap.stack_size) {
-        int sub_amount = (slotmap.stack_size + 15) & ~15;
+        int sub_amount = ((slotmap.stack_size + 8) + 15) & ~15;
         L(out, "sub rsp, %d", sub_amount);
     }
 
@@ -386,13 +392,13 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     L(out, "mov rax, %s", ARGREGS[i->param_idx]);
                     emit_store_slot(out, 8, mem(slot_offset, buf));
                     L(out, "mov rax, %s", ARGREGS[i->param_idx + 1]);
-                    emit_store_slot(out, 8, mem(slot_offset + 8, buf));
+                    emit_store_slot(out, 8, mem(slot_offset - 8, buf));
                 } else if (i->param_idx < MAX_ARGREGS) {
                     L(out, "mov rax, %s", ARGREGS[i->param_idx]);
                     emit_store_slot(out, bytes, mem(slot_of(&slotmap, i->dst), buf));
                 } else {
                     int stack_off = 16 + (i->param_idx - MAX_ARGREGS) * 8;
-                    L(out, "mov rax, qword [rbp + %d]", stack_off);
+                    L(out, "mov %s, qword [%s + %d]", "rax", "rbp", stack_off);
                     emit_store_slot(out, bytes, mem(slot_of(&slotmap, i->dst), buf));
                 }
                 break;
@@ -401,7 +407,22 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             case IR_CALL: {
                 int bytes   = type_bytes(i->type);
                 int reg_idx = 0;
-                for (int a = 0; a < i->call.arg_count && reg_idx < MAX_ARGREGS; a++) {
+                int xmm_idx = 0;
+
+                for (int a = 0; a < i->call.arg_count; a++) {
+                    Type* arg_type = i->call.arg_types ? i->call.arg_types[a] : NULL;
+                    if (arg_type && arg_type->kind == TYPE_FLOAT) {
+                        xmm_idx++;
+                    }
+                }
+
+                L(out, "xor eax, eax");
+                if (xmm_idx > 0) {
+                    L(out, "mov eax, %d", xmm_idx);
+                }
+                xmm_idx = reg_idx = 0;
+
+                for (int a = 0; a < i->call.arg_count && (reg_idx < MAX_ARGREGS || xmm_idx < 8); a++) {
                     Type* arg_type = i->call.arg_types ? i->call.arg_types[a] : NULL;
 
                     if (arg_type && arg_type->kind == TYPE_PTR && arg_type->ptr_type.is_fat) {
@@ -411,29 +432,57 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                             L(out, "mov %s, qword %s", ARGREGS[reg_idx + 1], mem(slot_offset - 8, buf2));
                             reg_idx += 2;
                         }
-                    } else {
+                    } else if (arg_type && arg_type->kind == TYPE_FLOAT) {
+                        int        arg_slot  = slot_of(&slotmap, i->call.args[a]);
+                        long long* const_val = ht_find(&slotmap.const_vals, i->call.args[a]);
+
+                        if (const_val) {
+                            long long val = *const_val;
+                            int       lo  = (int)(val & 0xFFFFFFFF);
+                            int       hi  = (int)((val >> 32) & 0xFFFFFFFF);
+                            L(out, "mov eax, %d", lo);
+                            L(out, "mov %s, %d", "edx", hi);
+                            L(out, "shl %s, 32", "rdx");
+                            L(out, "or %s, %s", "rax", "rdx");
+                            L(out, "movq %s, %s", XMMREGS[xmm_idx], "rax");
+                        } else {
+                            L(out, "movq %s, qword %s", XMMREGS[xmm_idx], mem(arg_slot, buf));
+                        }
+                        xmm_idx++;
+                    } else if (reg_idx < MAX_ARGREGS) {
                         int  arg_bytes  = arg_type ? type_bytes(arg_type) : 8;
                         bool arg_signed = arg_type ? type_is_signed(arg_type) : false;
                         int  arg_slot   = slot_of(&slotmap, i->call.args[a]);
 
                         long long* const_val = ht_find(&slotmap.const_vals, i->call.args[a]);
-                        if (const_val) {
+                        
+                        IrVal arg_val = i->call.args[a];
+                        IrInstr* arg_instr = NULL;
+                        for (int ii = 0; ii < f->instr_count; ii++) {
+                            if (f->instrs[ii].dst == arg_val) {
+                                arg_instr = &f->instrs[ii];
+                                break;
+                            }
+                        }
+                        
+                        if (arg_instr && arg_instr->op == IR_STRING) {
+                            L(out, "lea %s, [__str%d]", ARGREGS[reg_idx], arg_instr->str_idx);
+                        } else if (const_val) {
                             if (*const_val >= (-1LL << 31) && *const_val <= (1LL << 31) - 1) {
                                 const char* arg_reg_32 = reg_for_bytes(ARGREGS[reg_idx], 4);
                                 L(out, "mov %s, %lld", arg_reg_32, *const_val);
                             } else {
-                                L(out, "mov rax, %lld", *const_val);
-                                L(out, "mov %s, rax", ARGREGS[reg_idx]);
+                                L(out, "mov %s, %lld", "rax", *const_val);
+                                L(out, "mov %s, %s", ARGREGS[reg_idx], "rax");
                             }
                         } else {
                             emit_load_or_const(
                                 out, &slotmap, i->call.args[a], arg_bytes, arg_signed, mem(arg_slot, buf));
-                            L(out, "mov %s, rax", ARGREGS[reg_idx]);
+                            L(out, "mov %s, %s", ARGREGS[reg_idx], "rax");
                         }
                         reg_idx++;
                     }
                 }
-                L(out, "xor eax, eax");
                 L(out, "call %s", symmap_lookup(sm, i->call.name));
                 if (i->dst != IR_NO_VAL) {
                     if (is_float)
@@ -449,111 +498,195 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 int  rhs_bytes  = i->rhs_type ? type_bytes(i->rhs_type) : 8;
                 bool rhs_signed = i->rhs_type ? type_is_signed(i->rhs_type) : false;
                 bool cmp_signed = lhs_signed || rhs_signed;
+                bool is_float   = i->lhs_type && i->lhs_type->kind == TYPE_FLOAT;
 
-                emit_load_or_const_to(
-                    out, &slotmap, i->blhs, "rax", lhs_bytes, lhs_signed, mem(slot_of(&slotmap, i->blhs), buf));
-                emit_load_or_const_to(
-                    out, &slotmap, i->brhs, "rcx", rhs_bytes, rhs_signed, mem(slot_of(&slotmap, i->brhs), buf2));
+                if (is_float) {
+                    long long* lhs_const = ht_find(&slotmap.const_vals, i->blhs);
+                    if (lhs_const) {
+                        long long val = *lhs_const;
+                        int       lo  = (int)(val & 0xFFFFFFFF);
+                        int       hi  = (int)((val >> 32) & 0xFFFFFFFF);
+                        L(out, "mov eax, %d", lo);
+                        L(out, "mov edx, %d", hi);
+                        L(out, "shl %s, 32", "rdx");
+                        L(out, "or %s, %s", "rax", "rdx");
+                        L(out, "movq %s, %s", XMMREGS[0], "rax");
+                    } else {
+                        L(out, "movq %s, qword %s", XMMREGS[0], mem(slot_of(&slotmap, i->blhs), buf));
+                    }
 
-                switch (i->bop) {
-                    case OP_ADD:
-                        L(out, "add rax, rcx");
-                        break;
-                    case OP_SUB:
-                        L(out, "sub rax, rcx");
-                        break;
-                    case OP_EQ:
-                        L(out, "cmp rax, rcx");
-                        L(out, "sete al");
-                        L(out, "movzx rax, al");
-                        break;
-                    case OP_LESS:
-                        L(out, "cmp rax, rcx");
-                        L(out, cmp_signed ? "setl al" : "setb al");
-                        L(out, "movzx rax, al");
-                        break;
-                    case OP_MORE:
-                        L(out, "cmp rax, rcx");
-                        L(out, cmp_signed ? "setg al" : "seta al");
-                        L(out, "movzx rax, al");
-                        break;
-                    case OP_LESSEQ:
-                        L(out, "cmp rax, rcx");
-                        L(out, cmp_signed ? "setle al" : "setbe al");
-                        L(out, "movzx rax, al");
-                        break;
-                    case OP_MOREEQ:
-                        L(out, "cmp rax, rcx");
-                        L(out, cmp_signed ? "setge al" : "setae al");
-                        L(out, "movzx rax, al");
-                        break;
-                    case OP_MOD:
-                        if (cmp_signed) {
-                            L(out, "cqo");
-                            L(out, "idiv rcx");
-                        } else {
-                            L(out, "xor edx, edx");
-                            L(out, "div rcx");
-                        }
-                        L(out, "mov rax, rdx");
-                        break;
-                    case OP_DIV:
-                        if (cmp_signed) {
-                            L(out, "cqo");
-                            L(out, "idiv rcx");
-                        } else {
-                            L(out, "xor edx, edx");
-                            L(out, "div rcx");
-                        }
-                        break;
-                    case OP_MUL:
-                        L(out, "imul rax, rcx");
-                        break;
-                    case OP_NEQ:
-                        L(out, "cmp rax, rcx");
-                        L(out, "setne al");
-                        L(out, "movzx rax, al");
-                        break;
-                    case OP_BITAND:
-                        L(out, "and rax, rcx");
-                        break;
-                    case OP_BITOR:
-                        L(out, "or rax, rcx");
-                        break;
-                    case OP_BITXOR:
-                        L(out, "xor rax, rcx");
-                        break;
-                    case OP_SHL:
-                        L(out, lhs_signed ? "sal rax, cl" : "shl rax, cl");
-                        break;
-                    case OP_SHR:
-                        L(out, lhs_signed ? "sar rax, cl" : "shr rax, cl");
-                        break;
-                    case OP_LAND:
-                        L(out, "test rax, rax");
-                        L(out, "setne al");
-                        L(out, "movzx rax, al");
-                        L(out, "test rcx, rcx");
-                        L(out, "setne cl");
-                        L(out, "and rax, rcx");
-                        break;
-                    case OP_LOR:
-                        L(out, "test rax, rax");
-                        L(out, "setne al");
-                        L(out, "movzx rax, al");
-                        L(out, "test rcx, rcx");
-                        L(out, "setne cl");
-                        L(out, "or rax, rcx");
-                        break;
-                    case OP_POW:
-                        L(out, "cvtsi2sd xmm0, rax");
-                        L(out, "cvtsi2sd xmm1, rcx");
-                        L(out, "call pow");
-                        L(out, "cvttsd2si rax, xmm0");
-                        break;
-                    default:
-                        ICE("unhandled binop in codegen");
-                        break;
+                    long long* rhs_const = ht_find(&slotmap.const_vals, i->brhs);
+                    if (rhs_const) {
+                        long long val = *rhs_const;
+                        int       lo  = (int)(val & 0xFFFFFFFF);
+                        int       hi  = (int)((val >> 32) & 0xFFFFFFFF);
+                        L(out, "mov eax, %d", lo);
+                        L(out, "mov edx, %d", hi);
+                        L(out, "shl %s, 32", "rdx");
+                        L(out, "or %s, %s", "rax", "rdx");
+                        L(out, "movq %s, %s", XMMREGS[1], "rax");
+                    } else {
+                        L(out, "movq %s, qword %s", XMMREGS[1], mem(slot_of(&slotmap, i->brhs), buf2));
+                    }
+
+                    switch (i->bop) {
+                        case OP_ADD:
+                            L(out, "addsd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            break;
+                        case OP_SUB:
+                            L(out, "subsd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            break;
+                        case OP_MUL:
+                            L(out, "mulsd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            break;
+                        case OP_DIV:
+                            L(out, "divsd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            break;
+                        case OP_EQ:
+                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, "sete al");
+                            L(out, "movzx %s, al", "rax");
+                            break;
+                        case OP_NEQ:
+                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, "setne al");
+                            L(out, "movzx %s, al", "rax");
+                            break;
+                        case OP_LESS:
+                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, "setb al");
+                            L(out, "movzx %s, al", "rax");
+                            break;
+                        case OP_LESSEQ:
+                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, "setbe al");
+                            L(out, "movzx %s, al", "rax");
+                            break;
+                        case OP_MORE:
+                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, "seta al");
+                            L(out, "movzx %s, al", "rax");
+                            break;
+                        case OP_MOREEQ:
+                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, "setae al");
+                            L(out, "movzx %s, al", "rax");
+                            break;
+                        default:
+                            ICE("unsupported float binop in codegen");
+                            break;
+                    }
+
+                    if (i->bop != OP_EQ && i->bop != OP_NEQ && i->bop != OP_LESS && i->bop != OP_LESSEQ &&
+                        i->bop != OP_MORE && i->bop != OP_MOREEQ) {
+                        L(out, "movq %s, %s", "rax", XMMREGS[0]);
+                    }
+                } else {
+                    emit_load_or_const_to(
+                        out, &slotmap, i->blhs, "rax", lhs_bytes, lhs_signed, mem(slot_of(&slotmap, i->blhs), buf));
+                    emit_load_or_const_to(
+                        out, &slotmap, i->brhs, "rcx", rhs_bytes, rhs_signed, mem(slot_of(&slotmap, i->brhs), buf2));
+
+                    switch (i->bop) {
+                        case OP_ADD:
+                            L(out, "add rax, rcx");
+                            break;
+                        case OP_SUB:
+                            L(out, "sub rax, rcx");
+                            break;
+                        case OP_EQ:
+                            L(out, "cmp rax, rcx");
+                            L(out, "sete al");
+                            L(out, "movzx rax, al");
+                            break;
+                        case OP_LESS:
+                            L(out, "cmp rax, rcx");
+                            L(out, cmp_signed ? "setl al" : "setb al");
+                            L(out, "movzx rax, al");
+                            break;
+                        case OP_MORE:
+                            L(out, "cmp rax, rcx");
+                            L(out, cmp_signed ? "setg al" : "seta al");
+                            L(out, "movzx rax, al");
+                            break;
+                        case OP_LESSEQ:
+                            L(out, "cmp rax, rcx");
+                            L(out, cmp_signed ? "setle al" : "setbe al");
+                            L(out, "movzx rax, al");
+                            break;
+                        case OP_MOREEQ:
+                            L(out, "cmp rax, rcx");
+                            L(out, cmp_signed ? "setge al" : "setae al");
+                            L(out, "movzx rax, al");
+                            break;
+                        case OP_MOD:
+                            if (cmp_signed) {
+                                L(out, "cqo");
+                                L(out, "idiv rcx");
+                            } else {
+                                L(out, "xor edx, edx");
+                                L(out, "div rcx");
+                            }
+                            L(out, "mov rax, rdx");
+                            break;
+                        case OP_DIV:
+                            if (cmp_signed) {
+                                L(out, "cqo");
+                                L(out, "idiv rcx");
+                            } else {
+                                L(out, "xor edx, edx");
+                                L(out, "div rcx");
+                            }
+                            break;
+                        case OP_MUL:
+                            L(out, "imul rax, rcx");
+                            break;
+                        case OP_NEQ:
+                            L(out, "cmp rax, rcx");
+                            L(out, "setne al");
+                            L(out, "movzx rax, al");
+                            break;
+                        case OP_BITAND:
+                            L(out, "and rax, rcx");
+                            break;
+                        case OP_BITOR:
+                            L(out, "or rax, rcx");
+                            break;
+                        case OP_BITXOR:
+                            L(out, "xor rax, rcx");
+                            break;
+                        case OP_SHL:
+                            L(out, lhs_signed ? "sal rax, cl" : "shl rax, cl");
+                            break;
+                        case OP_SHR:
+                            L(out, lhs_signed ? "sar rax, cl" : "shr rax, cl");
+                            break;
+                        case OP_LAND:
+                            L(out, "test rax, rax");
+                            L(out, "setne al");
+                            L(out, "movzx rax, al");
+                            L(out, "test rcx, rcx");
+                            L(out, "setne cl");
+                            L(out, "and rax, rcx");
+                            break;
+                        case OP_LOR:
+                            L(out, "test rax, rax");
+                            L(out, "setne al");
+                            L(out, "movzx rax, al");
+                            L(out, "test rcx, rcx");
+                            L(out, "setne cl");
+                            L(out, "or rax, rcx");
+                            break;
+                        case OP_POW:
+                            L(out, "cvtsi2sd xmm0, rax");
+                            L(out, "cvtsi2sd xmm1, rcx");
+                            L(out, "call pow");
+                            L(out, "cvttsd2si rax, xmm0");
+                            break;
+                        default:
+                            ICE("unhandled binop in codegen");
+                            break;
+                    }
                 }
                 int bytes = type_bytes(i->type);
                 emit_store_slot(out, bytes, mem(slot_of(&slotmap, i->dst), buf));
@@ -614,6 +747,8 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                         emit_load_or_const(
                             out, &slotmap, i->src, ret_bytes, ret_signed, mem(slot_of(&slotmap, i->src), buf));
                     }
+                } else {
+                    L(out, "xor eax, eax");
                 }
                 L(out, "leave");
                 L(out, "ret");
@@ -651,9 +786,9 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     int src_slot = slot_of(&slotmap, i->load_ptr);
                     if (fat) {
                         L(out, "mov rax, qword %s", mem(src_slot, buf));
-                        L(out, "mov rcx, qword %s", mem(src_slot + 8, buf2));
+                        L(out, "mov rcx, qword %s", mem(src_slot - 8, buf2));
                         L(out, "mov qword %s, rax", mem(dst_slot, buf));
-                        L(out, "mov qword %s, rcx", mem(dst_slot + 8, buf2));
+                        L(out, "mov qword %s, rcx", mem(dst_slot - 8, buf2));
                     } else {
                         L(out, "lea rax, %s", mem(src_slot, buf));
                         switch (bytes) {
@@ -679,7 +814,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                         L(out, "mov rcx, qword [rax]");
                         L(out, "mov rdx, qword [rax + 8]");
                         L(out, "mov qword %s, rcx", mem(dst_slot, buf));
-                        L(out, "mov qword %s, rdx", mem(dst_slot + 8, buf2));
+                        L(out, "mov qword %s, rdx", mem(dst_slot - 8, buf2));
                     } else {
                         switch (bytes) {
                             case 1:
@@ -768,8 +903,6 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             }
 
             case IR_STRING: {
-                L(out, "lea rax, [__str%d]", i->str_idx);
-                L(out, "mov qword %s, rax", mem(slot_of(&slotmap, i->dst), buf));
                 break;
             }
 
@@ -824,16 +957,15 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             case IR_FAT_LEN: {
                 int src_slot = slot_of(&slotmap, i->src);
                 int dst_slot = slot_of(&slotmap, i->dst);
-                L(out, "mov rax, qword %s", mem(src_slot + 8, buf));
+                L(out, "mov rax, qword %s", mem(src_slot - 8, buf));
                 L(out, "mov qword %s, rax", mem(dst_slot, buf2));
                 break;
             }
 
             case IR_FAT_SET_LEN: {
                 int fat_slot = slot_of(&slotmap, i->store_ptr);
-                int val_slot = slot_of(&slotmap, i->store_val);
-                emit_load_or_const_to(out, &slotmap, i->store_val, "rax", 8, false, mem(val_slot, buf));
-                L(out, "mov qword %s, rax", mem(fat_slot + 8, buf2));
+                emit_load_or_const_to(out, &slotmap, i->store_val, "rax", 8, false, "");
+                L(out, "mov qword %s, rax", mem(fat_slot - 8, buf2));
                 break;
             }
 
@@ -867,6 +999,34 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 break;
             }
 
+            case IR_SELECT: {
+                static int select_label_counter = 0;
+                int        cond_slot            = slot_of(&slotmap, i->sel_cond);
+                int        true_slot            = slot_of(&slotmap, i->sel_true_val);
+                int        false_slot           = slot_of(&slotmap, i->sel_false_val);
+                int        dst_slot             = slot_of(&slotmap, i->dst);
+                int        sz                   = type_bytes(i->type);
+
+                int false_label = select_label_counter++;
+                int end_label   = select_label_counter++;
+
+                emit_load_or_const(out, &slotmap, i->sel_cond, 4, false, mem(cond_slot, buf));
+                L(out, "test eax, eax");
+
+                L(out, "jz .sel_false_%d", false_label);
+
+                emit_load_or_const(out, &slotmap, i->sel_true_val, sz, false, mem(true_slot, buf));
+                emit_store_slot(out, sz, mem(dst_slot, buf2));
+                L(out, "jmp .sel_end_%d", end_label);
+
+                L(out, ".sel_false_%d:", false_label);
+                emit_load_or_const(out, &slotmap, i->sel_false_val, sz, false, mem(false_slot, buf));
+                emit_store_slot(out, sz, mem(dst_slot, buf2));
+
+                L(out, ".sel_end_%d:", end_label);
+                break;
+            }
+
             default:
                 ICE("unhandled IR opcode in codegen");
                 break;
@@ -874,6 +1034,9 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
     }
 
     if (f->instr_count == 0 || f->instrs[f->instr_count - 1].op != IR_RET) {
+        if (f->ret_type && f->ret_type->kind != TYPE_VOID) {
+            L(out, "xor eax, eax");
+        }
         L(out, "leave");
         L(out, "ret");
     }
@@ -956,6 +1119,8 @@ void codegen_x86_64_linux(IrModule* m, FILE* out) {
                 L(out, "mov rax, r8");
                 L(out, "imul rax, 16");
                 L(out, "add rax, 8");
+                L(out, "add rax, 15");
+                L(out, "and rax, -16");
                 L(out, "sub rsp, rax");
                 L(out, "mov r10, rsp");
 

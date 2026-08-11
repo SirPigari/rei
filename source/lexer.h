@@ -30,7 +30,9 @@ typedef enum {
     TK_IF,
     TK_ELSE,
     TK_WHILE,
+    TK_FOR,
     TK_AS,
+    TK_NULLPTR,
 
     /* punctuation */
     TK_LPAREN,     /* (   */
@@ -46,6 +48,8 @@ typedef enum {
     TK_RBRACKET,   /* ]   */
     TK_DOT,        /* .   */
     TK_DOTDOT,     /* ..  */
+    TK_DOTDOTLESS, /* ..< */
+    TK_DOTDOTDOT,  /* ... */
     TK_QUESTION,   /* ?   */
     TK_PLUS,       /* +   */
     TK_MINUS,      /* -   */

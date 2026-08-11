@@ -1018,6 +1018,285 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
             endl->label                 = end_label_idx;
             f->instrs[jmp_if_idx].label = end_label_idx;
         } break;
+        case AST_FOR_STMT: {
+            Type* iter_type = s->for_iterable->type;
+
+            if (iter_type && (iter_type->kind == TYPE_INT || iter_type->kind == TYPE_FLOAT)) {
+                if (s->for_iterable->kind == AST_RANGE) {
+                    AstNode* range = s->for_iterable;
+
+                    IrVal start_val = lower_expr(m, f, range->range_start, vars);
+                    IrVal end_val   = lower_expr(m, f, range->range_end, vars);
+                    IrVal step_val  = range->range_step ? lower_expr(m, f, range->range_step, vars) : IR_NO_VAL;
+
+                    if (step_val == IR_NO_VAL && iter_type->kind == TYPE_INT) {
+                        IrInstr* default_step = emit(f);
+                        default_step->op      = IR_CONST_INT;
+                        default_step->dst     = next_val(f);
+                        default_step->type    = iter_type;
+                        default_step->ival    = 1;
+                        step_val              = default_step->dst;
+                    }
+
+                    if (s->for_val && s->for_val->kind == AST_IDENT) {
+                        IrVal loop_var_ptr = ensure_alloca(f, vars, s->for_val->ident, iter_type, 1);
+
+                        IrInstr* init_store   = emit(f);
+                        init_store->op        = IR_STORE;
+                        init_store->dst       = IR_NO_VAL;
+                        init_store->type      = iter_type;
+                        init_store->store_ptr = loop_var_ptr;
+                        init_store->store_val = start_val;
+
+                        int      loop_label_idx = next_label(m);
+                        IrInstr* loop_label     = emit(f);
+                        loop_label->op          = IR_LABEL;
+                        loop_label->label       = loop_label_idx;
+
+                        IrInstr* load_cond  = emit(f);
+                        load_cond->op       = IR_LOAD;
+                        load_cond->dst      = next_val(f);
+                        load_cond->type     = iter_type;
+                        load_cond->load_ptr = loop_var_ptr;
+
+                        IrInstr* zero_const = emit(f);
+                        zero_const->op      = IR_CONST_INT;
+                        zero_const->dst     = next_val(f);
+                        zero_const->type    = iter_type;
+                        zero_const->ival    = 0;
+
+                        IrInstr* step_cmp  = emit(f);
+                        step_cmp->op       = IR_BINOP;
+                        step_cmp->bop      = OP_MORE;
+                        step_cmp->blhs     = step_val;
+                        step_cmp->brhs     = zero_const->dst;
+                        step_cmp->dst      = next_val(f);
+                        step_cmp->type     = type_number(TYPE_INT, 32, 0);
+                        step_cmp->lhs_type = iter_type;
+                        step_cmp->rhs_type = iter_type;
+
+                        IrInstr* cmp_pos  = emit(f);
+                        cmp_pos->op       = IR_BINOP;
+                        cmp_pos->bop      = (range->range_kind == RANGE_INCLUSIVE) ? OP_LESSEQ : OP_LESS;
+                        cmp_pos->blhs     = load_cond->dst;
+                        cmp_pos->brhs     = end_val;
+                        cmp_pos->dst      = next_val(f);
+                        cmp_pos->type     = type_number(TYPE_INT, 32, 0);
+                        cmp_pos->lhs_type = iter_type;
+                        cmp_pos->rhs_type = iter_type;
+
+                        IrInstr* cmp_neg  = emit(f);
+                        cmp_neg->op       = IR_BINOP;
+                        cmp_neg->bop      = (range->range_kind == RANGE_INCLUSIVE) ? OP_MOREEQ : OP_MORE;
+                        cmp_neg->blhs     = load_cond->dst;
+                        cmp_neg->brhs     = end_val;
+                        cmp_neg->dst      = next_val(f);
+                        cmp_neg->type     = type_number(TYPE_INT, 32, 0);
+                        cmp_neg->lhs_type = iter_type;
+                        cmp_neg->rhs_type = iter_type;
+
+                        IrInstr* select       = emit(f);
+                        select->op            = IR_SELECT;
+                        select->dst           = next_val(f);
+                        select->type          = type_number(TYPE_INT, 32, 0);
+                        select->sel_cond      = step_cmp->dst;
+                        select->sel_true_val  = cmp_pos->dst;
+                        select->sel_false_val = cmp_neg->dst;
+
+                        int jmp_if_idx            = f->instr_count;
+                        emit(f)->op               = IR_JMP_IF;
+                        f->instrs[jmp_if_idx].src = select->dst;
+
+                        lower_stmt(m, f, s->for_body, vars);
+
+                        IrInstr* load_incr  = emit(f);
+                        load_incr->op       = IR_LOAD;
+                        load_incr->dst      = next_val(f);
+                        load_incr->type     = iter_type;
+                        load_incr->load_ptr = loop_var_ptr;
+
+                        IrInstr* incr  = emit(f);
+                        incr->op       = IR_BINOP;
+                        incr->bop      = OP_ADD;
+                        incr->blhs     = load_incr->dst;
+                        incr->brhs     = step_val;
+                        incr->dst      = next_val(f);
+                        incr->type     = iter_type;
+                        incr->lhs_type = iter_type;
+                        incr->rhs_type = iter_type;
+
+                        IrInstr* store_incr   = emit(f);
+                        store_incr->op        = IR_STORE;
+                        store_incr->dst       = IR_NO_VAL;
+                        store_incr->type      = iter_type;
+                        store_incr->store_ptr = loop_var_ptr;
+                        store_incr->store_val = incr->dst;
+
+                        IrInstr* jmp_back = emit(f);
+                        jmp_back->op      = IR_JMP;
+                        jmp_back->label   = loop_label_idx;
+
+                        int      end_label_idx      = next_label(m);
+                        IrInstr* endl               = emit(f);
+                        endl->op                    = IR_LABEL;
+                        endl->label                 = end_label_idx;
+                        f->instrs[jmp_if_idx].label = end_label_idx;
+                    }
+                }
+            } else if (iter_type &&
+                       (iter_type->kind == TYPE_ARRAY || (iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat))) {
+                IrVal iterable = lower_expr(m, f, s->for_iterable, vars);
+
+                IrVal len_val;
+                IrVal gep_base = iterable;
+
+                if (s->for_iterable->kind == AST_IDENT && vars) {
+                    VarSlot* slot = ht_find(vars, s->for_iterable->ident);
+                    if (slot && iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat) {
+                        IrVal fat_ptr_val = (slot->val != IR_NO_VAL) ? slot->val : slot->ptr;
+
+                        IrInstr* get_len = emit(f);
+                        get_len->op      = IR_FAT_LEN;
+                        get_len->dst     = next_val(f);
+                        get_len->type    = type_number(TYPE_INT, 64, false);
+                        get_len->src     = fat_ptr_val;
+                        len_val          = get_len->dst;
+
+                        gep_base = fat_ptr_val;
+                    } else {
+                        len_val = iterable;
+                    }
+                } else if (iter_type->kind == TYPE_ARRAY) {
+                    IrInstr* len_const = emit(f);
+                    len_const->op      = IR_CONST_INT;
+                    len_const->dst     = next_val(f);
+                    len_const->type    = type_number(TYPE_INT, 64, false);
+                    len_const->ival    = (long long)iter_type->array_type.len;
+                    len_val            = len_const->dst;
+                } else if (iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat) {
+                    IrInstr* get_len = emit(f);
+                    get_len->op      = IR_FAT_LEN;
+                    get_len->dst     = next_val(f);
+                    get_len->type    = type_number(TYPE_INT, 64, false);
+                    get_len->src     = iterable;
+                    len_val          = get_len->dst;
+                    gep_base         = iterable;
+                } else {
+                    len_val = iterable;
+                }
+
+                Type*    idx_type = type_number(TYPE_INT, 64, false);
+                IrInstr* idx_init = emit(f);
+                idx_init->op      = IR_CONST_INT;
+                idx_init->dst     = next_val(f);
+                idx_init->type    = idx_type;
+                idx_init->ival    = 0;
+
+                IrVal idx_var_ptr = ensure_alloca(f, vars, "__loop_idx", idx_type, 1);
+
+                IrInstr* idx_init_store   = emit(f);
+                idx_init_store->op        = IR_STORE;
+                idx_init_store->dst       = IR_NO_VAL;
+                idx_init_store->type      = idx_type;
+                idx_init_store->store_ptr = idx_var_ptr;
+                idx_init_store->store_val = idx_init->dst;
+
+                if (s->for_val && s->for_val->kind == AST_IDENT) {
+                    IrVal loop_var_ptr = ensure_alloca(f,
+                                                       vars,
+                                                       s->for_val->ident,
+                                                       iter_type->kind == TYPE_ARRAY ? iter_type->array_type.elem_type
+                                                                                     : iter_type->ptr_type.elem_type,
+                                                       1);
+                }
+
+                int      loop_label_idx = next_label(m);
+                IrInstr* loop_label     = emit(f);
+                loop_label->op          = IR_LABEL;
+                loop_label->label       = loop_label_idx;
+
+                IrInstr* idx_load  = emit(f);
+                idx_load->op       = IR_LOAD;
+                idx_load->dst      = next_val(f);
+                idx_load->type     = idx_type;
+                idx_load->load_ptr = idx_var_ptr;
+                IrVal idx_var      = idx_load->dst;
+
+                IrInstr* cmp = emit(f);
+                cmp->op      = IR_BINOP;
+                cmp->bop     = OP_LESS;
+                cmp->blhs    = idx_var;
+                cmp->brhs    = len_val;
+                cmp->dst     = next_val(f);
+                cmp->type    = type_number(TYPE_INT, 32, 0);
+
+                int jmp_if_idx            = f->instr_count;
+                emit(f)->op               = IR_JMP_IF;
+                f->instrs[jmp_if_idx].src = cmp->dst;
+
+                if (s->for_val && s->for_val->kind == AST_IDENT) {
+                    Type* elem_type =
+                        iter_type->kind == TYPE_ARRAY ? iter_type->array_type.elem_type : iter_type->ptr_type.elem_type;
+                    int elem_scale = type_bytes(elem_type);
+
+                    IrInstr* gep   = emit(f);
+                    gep->op        = IR_GEP;
+                    gep->dst       = next_val(f);
+                    gep->type      = type_ptr(elem_type, false);
+                    gep->gep_base  = gep_base;
+                    gep->gep_idx   = idx_var;
+                    gep->gep_scale = elem_scale;
+                    gep->gep_base_type = iter_type;
+
+                    IrInstr* load_elem  = emit(f);
+                    load_elem->op       = IR_LOAD;
+                    load_elem->dst      = next_val(f);
+                    load_elem->type     = elem_type;
+                    load_elem->load_ptr = gep->dst;
+
+                    IrVal    loop_var_ptr = ht_find(vars, s->for_val->ident)->ptr;
+                    IrInstr* store_elem   = emit(f);
+                    store_elem->op        = IR_STORE;
+                    store_elem->dst       = IR_NO_VAL;
+                    store_elem->type      = elem_type;
+                    store_elem->store_ptr = loop_var_ptr;
+                    store_elem->store_val = load_elem->dst;
+                }
+
+                lower_stmt(m, f, s->for_body, vars);
+
+                IrInstr* one = emit(f);
+                one->op      = IR_CONST_INT;
+                one->dst     = next_val(f);
+                one->type    = idx_type;
+                one->ival    = 1;
+
+                IrInstr* incr = emit(f);
+                incr->op      = IR_BINOP;
+                incr->bop     = OP_ADD;
+                incr->blhs    = idx_var;
+                incr->brhs    = one->dst;
+                incr->dst     = next_val(f);
+                incr->type    = idx_type;
+
+                IrInstr* idx_store   = emit(f);
+                idx_store->op        = IR_STORE;
+                idx_store->dst       = IR_NO_VAL;
+                idx_store->type      = idx_type;
+                idx_store->store_ptr = idx_var_ptr;
+                idx_store->store_val = incr->dst;
+
+                IrInstr* jmp_back = emit(f);
+                jmp_back->op      = IR_JMP;
+                jmp_back->label   = loop_label_idx;
+
+                int      end_label_idx      = next_label(m);
+                IrInstr* endl               = emit(f);
+                endl->op                    = IR_LABEL;
+                endl->label                 = end_label_idx;
+                f->instrs[jmp_if_idx].label = end_label_idx;
+            }
+        } break;
         case AST_VAR_DECL: {
             Type* vtype = s->var_type ? s->var_type : (s->init ? s->init->type : NULL);
 
@@ -1747,6 +2026,14 @@ void ir_dump(IrModule* m) {
                             type_to_string(i->type, type_buf, sizeof(type_buf));
                             pos += snprintf(buf + pos, sizeof(buf) - pos, " -> %s", type_buf);
                         }
+                        break;
+                    case IR_SELECT:
+                        pos += snprintf(buf + pos,
+                                        sizeof(buf) - pos,
+                                        "select v%d ? v%d : v%d",
+                                        i->sel_cond,
+                                        i->sel_true_val,
+                                        i->sel_false_val);
                         break;
                     default:
                         ICE("unhandled IR opcode in ir_dump: %d", i->op);
