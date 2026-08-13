@@ -57,31 +57,8 @@ static Type* parse_type(Lexer* l) {
         return type_array(elem, 0);
     }
 
-    Token  t         = expect(l, TK_IDENT);
-    char   name[64]  = {0};
-    size_t len       = t.len < 63 ? t.len : 63;
-    size_t word_size = sizeof(void*) * 8;
-    memcpy(name, t.start, len);
-    if (strcmp(name, "void") == 0)
-        return type_void();
-    if (strcmp(name, "usize") == 0)
-        return type_number_with_flag(TYPE_INT, word_size, 1, false, true);
-    if (strcmp(name, "isize") == 0)
-        return type_number_with_flag(TYPE_INT, word_size, 0, false, true);
-    if (strcmp(name, "ssize") == 0)
-        return type_number_with_flag(TYPE_INT, word_size, 0, false, true);
-    if (strcmp(name, "fsize") == 0)
-        return type_number_with_flag(TYPE_FLOAT, word_size, 0, false, true);
-    char p    = name[0];
-    int  bits = len > 1 ? atoi(name + 1) : 0;
-    if (p == 'i' || p == 's')
-        return type_number(TYPE_INT, bits, 0);
-    if (p == 'u')
-        return type_number(TYPE_INT, bits, 1);
-    if (p == 'f')
-        return type_number(TYPE_FLOAT, bits, 0);
-    diag_emit(DIAG_ERROR, t.loc, "unknown type '%s'", name);
-    return type_void();
+    Token t = expect(l, TK_IDENT);
+    return type_ident(tok_str(t));
 }
 
 static AstNode* parse_expr(Lexer* l);
@@ -93,7 +70,7 @@ static AstNode* parse_primary(Lexer* l) {
     if (t.kind != TK_INT_LIT && t.kind != TK_FLOAT_LIT && t.kind != TK_IDENT && t.kind != TK_STRING_LIT &&
         t.kind != TK_LBRACKET && t.kind != TK_LPAREN && t.kind != TK_MINUS && t.kind != TK_PLUS && t.kind != TK_BANG &&
         t.kind != TK_BITNOT && t.kind != TK_BITAND && t.kind != TK_STAR && t.kind != TK_PLUSPLUS &&
-        t.kind != TK_MINUSMINUS) {
+        t.kind != TK_MINUSMINUS && t.kind != TK_NULLPTR) {
         diag_emit(DIAG_ERROR, loc, "expected expression, got %s", token_kind_str(t.kind));
         AstNode* n = ast_node(AST_INT_LIT, loc);
         n->ival    = 0;
@@ -151,6 +128,10 @@ static AstNode* parse_primary(Lexer* l) {
     if (t.kind == TK_LPAREN) {
         AstNode* n = parse_expr(l);
         expect(l, TK_RPAREN);
+        return n;
+    }
+    if (t.kind == TK_NULLPTR) {
+        AstNode* n = ast_node(AST_NULLPTR, loc);
         return n;
     }
 
@@ -470,8 +451,11 @@ static AstNode* parse_stmt(Lexer* l) {
             lexer_next(l);
             AstNode* n  = ast_node(AST_CONST_DECL, name_tok.loc);
             n->var_name = tok_str(name_tok);
-            n->var_type = NULL;
-            n->init     = parse_expr(l);
+            n->var_type = parse_type(l);
+            if (lexer_peek(l).kind == TK_EQ) {
+                lexer_next(l);
+                n->init = parse_expr(l);
+            }
             expect(l, TK_SEMI);
             return n;
         }

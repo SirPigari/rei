@@ -273,11 +273,23 @@ static void emit_load_or_const(FILE* out, SlotMap* sm, IrVal v, int bytes, bool 
         if (bytes == 8) {
             L(out, "mov rax, %lld", *const_val);
         } else if (bytes == 4) {
-            L(out, "mov eax, %lld", *const_val);
+            long long val_32 = *const_val & 0xFFFFFFFFLL;
+            if (val_32 > 0x7FFFFFFF) {
+                val_32 = (long long)(int)(*const_val);
+            }
+            L(out, "mov eax, %lld", val_32);
         } else if (bytes == 2) {
-            L(out, "mov eax, %lld", *const_val);
+            long long val_16 = *const_val & 0xFFFFLL;
+            if (val_16 > 0x7FFF) {
+                val_16 = (long long)(short)(*const_val);
+            }
+            L(out, "mov eax, %lld", val_16);
         } else if (bytes == 1) {
-            L(out, "mov eax, %lld", *const_val);
+            long long val_8 = *const_val & 0xFFL;
+            if (val_8 > 0x7F) {
+                val_8 = (long long)(char)(*const_val);
+            }
+            L(out, "mov eax, %lld", val_8);
         }
     } else {
         emit_load_slot(out, bytes, is_signed, mem_expr);
@@ -339,17 +351,25 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             if (ins->op == IR_ALLOCA || ins->op == IR_ARRAY_INIT) {
                 slotmap.stack_size += ins->alloca_slots * 8;
                 int* offset_ptr = ht_find_or_put(&slotmap.offsets, ins->dst);
-                *offset_ptr     = -(int)(slotmap.stack_size - ins->alloca_slots * 8 + 8);
+                *offset_ptr     = -(int)slotmap.stack_size;
                 mark_alloca(&slotmap, ins->dst);
             } else if (ins->op == IR_CONST_INT) {
                 *ht_put(&slotmap.const_vals, ins->dst) = ins->ival;
             } else if (ins->op == IR_CONST_FLOAT) {
                 union {
                     double    d;
+                    float     f;
                     long long ll;
+                    int       i;
                 } u;
-                u.d                                    = ins->fval;
-                *ht_put(&slotmap.const_vals, ins->dst) = u.ll;
+                int bytes = type_bytes(ins->type);
+                if (bytes == 4) {
+                    u.f                                    = (float)ins->fval;
+                    *ht_put(&slotmap.const_vals, ins->dst) = (long long)u.i;
+                } else {
+                    u.d                                    = ins->fval;
+                    *ht_put(&slotmap.const_vals, ins->dst) = u.ll;
+                }
             } else if (ins->op == IR_STRING) {
             } else {
                 if (ht_find(&slotmap.offsets, ins->dst))
@@ -380,6 +400,11 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             }
 
             case IR_CONST_FLOAT: {
+                break;
+            }
+
+            case IR_NULLPTR: {
+                *ht_put(&slotmap.const_vals, i->dst) = 0;
                 break;
             }
 
@@ -455,8 +480,8 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                         int  arg_slot   = slot_of(&slotmap, i->call.args[a]);
 
                         long long* const_val = ht_find(&slotmap.const_vals, i->call.args[a]);
-                        
-                        IrVal arg_val = i->call.args[a];
+
+                        IrVal    arg_val   = i->call.args[a];
                         IrInstr* arg_instr = NULL;
                         for (int ii = 0; ii < f->instr_count; ii++) {
                             if (f->instrs[ii].dst == arg_val) {
@@ -464,7 +489,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                                 break;
                             }
                         }
-                        
+
                         if (arg_instr && arg_instr->op == IR_STRING) {
                             L(out, "lea %s, [__str%d]", ARGREGS[reg_idx], arg_instr->str_idx);
                         } else if (const_val) {
@@ -981,7 +1006,19 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 int dst_slot = slot_of(&slotmap, i->dst);
 
                 if (src_is_float && dst_is_float) {
-                    emit_load_or_const(out, &slotmap, i->cast_src, src_bytes, false, mem(src_slot, buf));
+                    if (src_bytes == 4 && dst_bytes == 8) {
+                        L(out, "movss xmm0, dword %s", mem(src_slot, buf));
+                        L(out, "cvtss2sd xmm0, xmm0");
+                        L(out, "movq rax, xmm0");
+                    } else if (src_bytes == 8 && dst_bytes == 4) {
+                        L(out, "movsd xmm0, qword %s", mem(src_slot, buf));
+                        L(out, "cvtsd2ss xmm0, xmm0");
+                        L(out, "movd eax, xmm0");
+                    } else if (src_bytes == dst_bytes) {
+                        emit_load_or_const(out, &slotmap, i->cast_src, src_bytes, false, mem(src_slot, buf));
+                    } else {
+                        ICE("unsupported float-to-float cast in codegen");
+                    }
                     emit_store_slot(out, dst_bytes, mem(dst_slot, buf2));
                 } else if (src_is_float && !dst_is_float) {
                     L(out, "movq xmm0, qword %s", mem(src_slot, buf));

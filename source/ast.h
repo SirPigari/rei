@@ -19,6 +19,8 @@ typedef enum {
     TYPE_PTR,
     /* [T], [T; N] */
     TYPE_ARRAY,
+    /* unresolved identifier (const reference) */
+    TYPE_IDENT,
     /* unsupported | count */
     TYPE_UNSUPPORTED,
 } TypeKind;
@@ -41,6 +43,9 @@ typedef struct Type {
             Type*  elem_type;
             size_t len;
         } array_type;
+        struct {
+            char* name;
+        } ident_type;
     };
 } Type;
 
@@ -50,6 +55,7 @@ Type* type_void(void);
 Type* type_ptr(Type* elem, bool is_fat);
 Type* type_array(Type* elem, size_t len); /* len=0 => unsized [T] */
 Type* type_abstract_int(void);
+Type* type_ident(const char* name);
 
 typedef struct {
     char*    name; /* NULL = unnamed */
@@ -76,6 +82,7 @@ typedef enum {
     AST_FLOAT_LIT,   /* 3.14, 3.14f32                     */
     AST_STRING_LIT,  /* "hello"                           */
     AST_ARRAY_LIT,   /* [1, 2, 3]                         */
+    AST_NULLPTR,     /* nullptr                           */
     AST_TYPE_LIT,    /* i32, u64, f32                     */
     AST_IDENT,       /* foo                               */
     AST_INDEX,       /* arr[idx]                          */

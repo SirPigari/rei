@@ -8,6 +8,7 @@ typedef int IrVal; /* -1 = no value */
 typedef enum {
     IR_CONST_INT,   /* v = ival */
     IR_CONST_FLOAT, /* v = fval */
+    IR_NULLPTR,     /* v = nullptr (target-defined) */
     IR_PARAM,       /* v = param[idx] */
     IR_CALL,        /* v = name(args...) */
     IR_RET,         /* return v (or IR_NO_VAL for void) */

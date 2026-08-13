@@ -30,6 +30,8 @@ static bool types_equal(Type* a, Type* b) {
         case TYPE_ARRAY:
             return a->array_type.len == b->array_type.len &&
                    types_equal(a->array_type.elem_type, b->array_type.elem_type);
+        case TYPE_IDENT:
+            return strcmp(a->ident_type.name, b->ident_type.name) == 0;
         case TYPE_UNSUPPORTED:
             return false;
     }
@@ -85,6 +87,9 @@ static char* type_str(Type* t, char* buf, size_t cap) {
                 snprintf(buf, cap, "[%s]", inner);
             break;
         }
+        case TYPE_IDENT:
+            snprintf(buf, cap, "%s", t->ident_type.name);
+            break;
         case TYPE_UNSUPPORTED:
             snprintf(buf, cap, "<unsupported>");
             break;
@@ -301,6 +306,71 @@ static SymbolEntry* scope_lookup(Scope* sc, const char* name) {
     return NULL;
 }
 
+static Type* expr_ident_to_type(const char* name) {
+    if (strcmp(name, "void") == 0)
+        return type_void();
+
+    if (name[0] == 'i' || name[0] == 's' || name[0] == 'u' || name[0] == 'f') {
+        char        prefix = name[0];
+        const char* rest   = name + 1;
+
+        if (strcmp(rest, "size") == 0) {
+            if (prefix == 'i' || prefix == 's')
+                return type_number(TYPE_INT, 0, 0);
+            else if (prefix == 'u')
+                return type_number(TYPE_INT, 0, 1);
+            else if (prefix == 'f') {
+                Type* t             = type_number(TYPE_FLOAT, 0, 0);
+                t->int_type.is_size = true;
+                return t;
+            }
+            return NULL;
+        }
+
+        char* endptr;
+        long  bits = strtol(rest, &endptr, 10);
+
+        if (*endptr != '\0' || bits < 0 || bits > 65535)
+            return NULL;
+
+        if (prefix == 'i' || prefix == 's')
+            return type_number(TYPE_INT, (uint16_t)bits, 0);
+        else if (prefix == 'u')
+            return type_number(TYPE_INT, (uint16_t)bits, 1);
+        else if (prefix == 'f')
+            return type_number(TYPE_FLOAT, (uint16_t)bits, 0);
+    }
+
+    return NULL;
+}
+
+static Type* resolve_type(Type* t, Scope* sc) {
+    if (!t || t->kind != TYPE_IDENT)
+        return t;
+
+    const char* name = t->ident_type.name;
+
+    Type* builtin = expr_ident_to_type(name);
+    if (builtin)
+        return builtin;
+
+    SymbolEntry* sym = scope_lookup(sc, name);
+    if (sym && sym->decl && sym->decl->kind == AST_CONST_DECL && sym->decl->init) {
+        AstNode* init = sym->decl->init;
+        if (init->kind == AST_IDENT) {
+            Type* resolved = expr_ident_to_type(init->ident);
+            if (resolved)
+                return resolved;
+        }
+    }
+
+    if (sym && sym->type) {
+        return resolve_type(sym->type, sc);
+    }
+
+    return t;
+}
+
 static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint);
 static void  check_stmt(AstNode* s, Scope* sc, AstNode* fn);
 
@@ -309,6 +379,8 @@ static Type* check_expr(AstNode* e, Scope* sc) {
 }
 
 static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
+    hint = resolve_type(hint, sc);
+
     switch (e->kind) {
         case AST_INT_LIT:
             if (hint && hint->kind == TYPE_INT) {
@@ -337,6 +409,13 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     e->type = type_array(u8, 0);   /* [u8] */
                 else
                     e->type = type_ptr(u8, true);  /* []u8 */
+            }
+            return e->type;
+        }
+
+        case AST_NULLPTR: {
+            if (!e->type) {
+                e->type = type_ptr(type_void(), false);
             }
             return e->type;
         }
@@ -961,7 +1040,6 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
 
             if (!iter_type) {
                 diag_emit(DIAG_ERROR, s->for_iterable->loc, "iterable type cannot be inferred");
-                /* im too lazy to rewrite it properly lets hope the compiler optimizes it away */
             } else if (iter_type->kind == TYPE_ARRAY) {
             } else if (iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat) {
             } else if (iter_type->kind == TYPE_INT || iter_type->kind == TYPE_FLOAT) {
@@ -1376,6 +1454,194 @@ static bool validate_rei_main_signature(AstNode* func_decl) {
     }
 }
 
+static Type* convert_type_idents(Type* t, Scope* scope) {
+    if (!t)
+        return t;
+
+    if (t->kind == TYPE_IDENT) {
+        return resolve_type(t, scope);
+    } else if (t->kind == TYPE_PTR) {
+        t->ptr_type.elem_type = convert_type_idents(t->ptr_type.elem_type, scope);
+        return t;
+    } else if (t->kind == TYPE_ARRAY) {
+        t->array_type.elem_type = convert_type_idents(t->array_type.elem_type, scope);
+        return t;
+    }
+
+    return t;
+}
+
+static void convert_stmt_type_idents(AstNode* stmt, Scope* scope);
+
+static void convert_stmt_type_idents(AstNode* stmt, Scope* scope) {
+    if (!stmt)
+        return;
+
+    switch (stmt->kind) {
+        case AST_VAR_DECL:
+        case AST_CONST_DECL:
+            stmt->var_type = convert_type_idents(stmt->var_type, scope);
+            break;
+        case AST_BLOCK_STMT:
+            for (int i = 0; i < stmt->stmt_count; i++)
+                convert_stmt_type_idents(stmt->stmts[i], scope);
+            break;
+        case AST_IF_STMT:
+            convert_stmt_type_idents(stmt->then_branch, scope);
+            if (stmt->else_branch)
+                convert_stmt_type_idents(stmt->else_branch, scope);
+            break;
+        case AST_WHILE_STMT:
+            convert_stmt_type_idents(stmt->while_body, scope);
+            break;
+        case AST_FOR_STMT:
+            convert_stmt_type_idents(stmt->for_body, scope);
+            break;
+        case AST_FUNC_DECL: {
+            for (int i = 0; i < stmt->param_count; i++)
+                stmt->params[i].type = convert_type_idents(stmt->params[i].type, scope);
+            stmt->ret_type = convert_type_idents(stmt->ret_type, scope);
+            if (stmt->body)
+                convert_stmt_type_idents(stmt->body, scope);
+            break;
+        }
+        case AST_EXTERN_DECL: {
+            for (int i = 0; i < stmt->param_count; i++)
+                stmt->params[i].type = convert_type_idents(stmt->params[i].type, scope);
+            stmt->ret_type = convert_type_idents(stmt->ret_type, scope);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static AstNode* preprocess_expr(AstNode* expr, Scope* scope);
+static AstNode* preprocess_stmt(AstNode* stmt, Scope* scope);
+
+static AstNode* preprocess_expr(AstNode* expr, Scope* scope) {
+    if (!expr)
+        return NULL;
+
+    switch (expr->kind) {
+        case AST_IDENT: {
+            SymbolEntry* sym = scope_lookup(scope, expr->ident);
+            if (sym && sym->decl && sym->decl->kind == AST_CONST_DECL && sym->decl->init) {
+                return sym->decl->init;
+            }
+            return expr;
+        }
+
+        case AST_INT_LIT:
+        case AST_FLOAT_LIT:
+        case AST_STRING_LIT:
+        case AST_TYPE_LIT:
+            return expr;
+
+        case AST_ARRAY_LIT:
+            for (size_t i = 0; i < expr->element_count; i++)
+                expr->elements[i] = preprocess_expr(expr->elements[i], scope);
+            return expr;
+
+        case AST_CALL:
+            for (int i = 0; i < expr->arg_count; i++)
+                expr->args[i] = preprocess_expr(expr->args[i], scope);
+            return expr;
+
+        case AST_INDEX:
+            expr->array = preprocess_expr(expr->array, scope);
+            expr->index = preprocess_expr(expr->index, scope);
+            return expr;
+
+        case AST_MEMBER:
+            expr->member_value = preprocess_expr(expr->member_value, scope);
+            return expr;
+
+        case AST_RANGE:
+            expr->range_start = preprocess_expr(expr->range_start, scope);
+            expr->range_end   = preprocess_expr(expr->range_end, scope);
+            expr->range_step  = preprocess_expr(expr->range_step, scope);
+            return expr;
+
+        case AST_BINOP:
+            expr->lhs = preprocess_expr(expr->lhs, scope);
+            expr->rhs = preprocess_expr(expr->rhs, scope);
+            return expr;
+
+        case AST_UNOP:
+            expr->operand = preprocess_expr(expr->operand, scope);
+            return expr;
+
+        case AST_CAST:
+            expr->cast_expr = preprocess_expr(expr->cast_expr, scope);
+            return expr;
+
+        default:
+            return expr;
+    }
+}
+
+static AstNode* preprocess_stmt(AstNode* stmt, Scope* scope) {
+    if (!stmt)
+        return NULL;
+
+    switch (stmt->kind) {
+        case AST_VAR_DECL:
+            stmt->init = preprocess_expr(stmt->init, scope);
+            return stmt;
+
+        case AST_CONST_DECL:
+            stmt->init = preprocess_expr(stmt->init, scope);
+            return stmt;
+
+        case AST_RETURN_STMT:
+            stmt->ret_val = preprocess_expr(stmt->ret_val, scope);
+            return stmt;
+
+        case AST_EXPR_STMT:
+            stmt->expr = preprocess_expr(stmt->expr, scope);
+            return stmt;
+
+        case AST_BLOCK_STMT:
+            for (int i = 0; i < stmt->stmt_count; i++)
+                stmt->stmts[i] = preprocess_stmt(stmt->stmts[i], scope);
+            return stmt;
+
+        case AST_IF_STMT:
+            stmt->if_cond     = preprocess_expr(stmt->if_cond, scope);
+            stmt->then_branch = preprocess_stmt(stmt->then_branch, scope);
+            stmt->else_branch = preprocess_stmt(stmt->else_branch, scope);
+            return stmt;
+
+        case AST_WHILE_STMT:
+            stmt->while_cond = preprocess_expr(stmt->while_cond, scope);
+            stmt->while_body = preprocess_stmt(stmt->while_body, scope);
+            return stmt;
+
+        case AST_FOR_STMT:
+            stmt->for_val      = preprocess_expr(stmt->for_val, scope);
+            stmt->for_iterable = preprocess_expr(stmt->for_iterable, scope);
+            stmt->for_body     = preprocess_stmt(stmt->for_body, scope);
+            return stmt;
+
+        case AST_ASSIGN:
+            stmt->assign_target = preprocess_expr(stmt->assign_target, scope);
+            stmt->assign_value  = preprocess_expr(stmt->assign_value, scope);
+            return stmt;
+
+        case AST_FUNC_DECL:
+        case AST_EXTERN_DECL:
+            if (stmt->init)
+                stmt->init = preprocess_expr(stmt->init, scope);
+            if (stmt->body)
+                stmt->body = preprocess_stmt(stmt->body, scope);
+            return stmt;
+
+        default:
+            return stmt;
+    }
+}
+
 int semantic_check(Module* m, const CompileConfig* config) {
     int    prev   = diag_error_count;
     Scope* global = scope_new(NULL);
@@ -1395,6 +1661,22 @@ int semantic_check(Module* m, const CompileConfig* config) {
             else
                 scope_add(global, d->var_name, d, d->var_type);
         }
+    }
+
+    for (int i = 0; i < m->count; i++) {
+        AstNode* d = m->decls[i];
+        if (d->kind == AST_FUNC_DECL || d->kind == AST_EXTERN_DECL) {
+            if (d->body)
+                d->body = preprocess_stmt(d->body, global);
+        } else if (d->kind == AST_VAR_DECL || d->kind == AST_CONST_DECL) {
+            if (d->init)
+                d->init = preprocess_expr(d->init, global);
+        }
+    }
+
+    for (int i = 0; i < m->count; i++) {
+        AstNode* d = m->decls[i];
+        convert_stmt_type_idents(d, global);
     }
 
     for (int i = 0; i < m->count; i++) {
@@ -1425,8 +1707,6 @@ int semantic_check(Module* m, const CompileConfig* config) {
                               type_str(it, is, sizeof(is)));
                     diag_type_hint(it, d->var_type, d->init->loc);
                 }
-            } else {
-                check_expr(d->init, global);
             }
         }
     }

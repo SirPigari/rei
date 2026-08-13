@@ -54,6 +54,13 @@ Type* type_array(Type* elem, size_t len) {
     return t;
 }
 
+Type* type_ident(const char* name) {
+    Type* t            = calloc(1, sizeof(*t));
+    t->kind            = TYPE_IDENT;
+    t->ident_type.name = (char*)name;
+    return t;
+}
+
 AstNode* ast_node(AstKind kind, Location loc) {
     AstNode* n = calloc(1, sizeof(*n));
     n->kind    = kind;
@@ -237,6 +244,9 @@ static void dump_expr(AstNode* n, int ind) {
             printf("\"");
             break;
         }
+        case AST_NULLPTR:
+            printf("nullptr");
+            break;
         case AST_ARRAY_LIT:
             printf("[");
             for (size_t i = 0; i < n->element_count; i++) {

@@ -266,6 +266,13 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
 
             return fat->dst;
         }
+        case AST_NULLPTR: {
+            IrInstr* i = emit(f);
+            i->op      = IR_NULLPTR;
+            i->dst     = next_val(f);
+            i->type    = type_ptr(type_void(), false);
+            return i->dst;
+        }
         case AST_ARRAY_LIT: {
             size_t n      = e->element_count;
             Type*  etype  = (e->type && e->type->kind == TYPE_ARRAY) ? e->type->array_type.elem_type : NULL;
@@ -381,8 +388,24 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 IrVal v = lower_expr(m, f, e->args[a], vars);
                 if (v == IR_NO_VAL)
                     ICE("call argument lowered to IR_NO_VAL");
+
+                Type* arg_type = e->args[a]->type;
+
+                /* Promote f32 to f64 for function calls (C convention for variadic functions) */
+                if (arg_type && arg_type->kind == TYPE_FLOAT && arg_type->bits == 32) {
+                    Type*    f64_type    = type_number(TYPE_FLOAT, 64, 0);
+                    IrInstr* cast        = emit(f);
+                    cast->op             = IR_CAST;
+                    cast->dst            = next_val(f);
+                    cast->type           = f64_type;
+                    cast->cast_src       = v;
+                    cast->cast_from_type = arg_type;
+                    v                    = cast->dst;
+                    arg_type             = f64_type;
+                }
+
                 arg_vals[a]  = v;
-                arg_types[a] = e->args[a]->type;
+                arg_types[a] = arg_type;
             }
             IrInstr* i        = emit(f);
             i->op             = IR_CALL;
@@ -1150,7 +1173,14 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                 IrVal len_val;
                 IrVal gep_base = iterable;
 
-                if (s->for_iterable->kind == AST_IDENT && vars) {
+                if (iter_type->kind == TYPE_ARRAY) {
+                    IrInstr* len_const = emit(f);
+                    len_const->op      = IR_CONST_INT;
+                    len_const->dst     = next_val(f);
+                    len_const->type    = type_number(TYPE_INT, 64, false);
+                    len_const->ival    = (long long)iter_type->array_type.len;
+                    len_val            = len_const->dst;
+                } else if (s->for_iterable->kind == AST_IDENT && vars) {
                     VarSlot* slot = ht_find(vars, s->for_iterable->ident);
                     if (slot && iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat) {
                         IrVal fat_ptr_val = (slot->val != IR_NO_VAL) ? slot->val : slot->ptr;
@@ -1166,13 +1196,6 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                     } else {
                         len_val = iterable;
                     }
-                } else if (iter_type->kind == TYPE_ARRAY) {
-                    IrInstr* len_const = emit(f);
-                    len_const->op      = IR_CONST_INT;
-                    len_const->dst     = next_val(f);
-                    len_const->type    = type_number(TYPE_INT, 64, false);
-                    len_const->ival    = (long long)iter_type->array_type.len;
-                    len_val            = len_const->dst;
                 } else if (iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat) {
                     IrInstr* get_len = emit(f);
                     get_len->op      = IR_FAT_LEN;
@@ -1239,13 +1262,13 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                         iter_type->kind == TYPE_ARRAY ? iter_type->array_type.elem_type : iter_type->ptr_type.elem_type;
                     int elem_scale = type_bytes(elem_type);
 
-                    IrInstr* gep   = emit(f);
-                    gep->op        = IR_GEP;
-                    gep->dst       = next_val(f);
-                    gep->type      = type_ptr(elem_type, false);
-                    gep->gep_base  = gep_base;
-                    gep->gep_idx   = idx_var;
-                    gep->gep_scale = elem_scale;
+                    IrInstr* gep       = emit(f);
+                    gep->op            = IR_GEP;
+                    gep->dst           = next_val(f);
+                    gep->type          = type_ptr(elem_type, false);
+                    gep->gep_base      = gep_base;
+                    gep->gep_idx       = idx_var;
+                    gep->gep_scale     = elem_scale;
                     gep->gep_base_type = iter_type;
 
                     IrInstr* load_elem  = emit(f);
@@ -1302,7 +1325,10 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
 
             int slots = 1;
             if (s->var_type && s->var_type->kind == TYPE_ARRAY && s->var_type->array_type.len) {
-                slots = (int)s->var_type->array_type.len;
+                Type* elem_type   = s->var_type->array_type.elem_type;
+                int   elem_bytes  = type_bytes(elem_type);
+                int   total_bytes = elem_bytes * (int)s->var_type->array_type.len;
+                slots             = (total_bytes + 7) / 8;
             } else if (vtype) {
                 int bytes = type_bytes(vtype);
                 slots     = (bytes + 7) / 8;
@@ -1954,6 +1980,9 @@ void ir_dump(IrModule* m) {
                         break;
                     case IR_CONST_FLOAT:
                         pos += snprintf(buf + pos, sizeof(buf) - pos, "const_float %g", i->fval);
+                        break;
+                    case IR_NULLPTR:
+                        pos += snprintf(buf + pos, sizeof(buf) - pos, "nullptr");
                         break;
                     case IR_PARAM:
                         pos += snprintf(buf + pos, sizeof(buf) - pos, "param[%d]", i->param_idx);
