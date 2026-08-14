@@ -21,6 +21,8 @@ typedef enum {
     TYPE_ARRAY,
     /* unresolved identifier (const reference) */
     TYPE_IDENT,
+    /* !, no return */
+    TYPE_NEVER,
     /* unsupported | count */
     TYPE_UNSUPPORTED,
 } TypeKind;
@@ -36,7 +38,8 @@ typedef struct Type {
             unsigned is_size     : 1;
         } int_type;
         struct {
-            unsigned is_fat : 1;
+            unsigned is_fat   : 1;
+            unsigned non_null : 1;
             Type*    elem_type;
         } ptr_type;
         struct {
@@ -52,7 +55,8 @@ typedef struct Type {
 Type* type_number(TypeKind k, uint16_t bits, bool is_unsigned);
 Type* type_number_with_flag(TypeKind k, uint16_t bits, bool is_unsigned, bool is_abstract, bool is_size);
 Type* type_void(void);
-Type* type_ptr(Type* elem, bool is_fat);
+Type* type_never(void);
+Type* type_ptr(Type* elem, bool is_fat, bool non_null);
 Type* type_array(Type* elem, size_t len); /* len=0 => unsized [T] */
 Type* type_abstract_int(void);
 Type* type_ident(const char* name);
@@ -77,6 +81,7 @@ typedef enum {
     AST_WHILE_STMT,  /* while (cond) body                 */
     AST_FOR_STMT,    /* for val: iterable body            */
     AST_ASSIGN,      /* target = expr;                    */
+    AST_ANNOTATION,  /* #annot                            */
 
     AST_INT_LIT,     /* 42, 42u8, 42i32                   */
     AST_FLOAT_LIT,   /* 3.14, 3.14f32                     */
@@ -146,6 +151,22 @@ typedef enum {
     ASSIGN_POWEQ,
 } AssignOp;
 
+/* builtin => no target, annot => whatever is after it is the target */
+typedef enum {
+    BUILTIN_SIZEOF,
+    BUILTIN_ALIGNOF,
+    BUILTIN_OFFSETOF,
+
+    ANNOT_NO_MANGLE,
+    ANNOT_PRINTF_LIKE,
+    ANNOT_SCANF_LIKE,
+    ANNOT_STRFTIME_LIKE,
+    ANNOT_DEPRECATED,
+    ANNOT_INLINE,
+    ANNOT_SENTINEL,
+    ANNOT_LINK_NAME,
+} AnnotationType;
+
 typedef struct AstNode AstNode;
 
 struct AstNode {
@@ -211,6 +232,15 @@ struct AstNode {
             AstNode* assign_target; /* AST_IDENT or AST_INDEX */
             AssignOp assign_op;
             AstNode* assign_value;
+        };
+
+        /* AST_ANNOTATION */
+        struct {
+            AnnotationType annot_type;
+            AstNode*       annot_target; /* NULL = no target */
+            AstNode*       annot_exprs; /* NULL = no exprs/couldnt parse */
+            size_t         annot_expr_count;
+            const char*    annot_str;
         };
 
         /* AST_INT_LIT */

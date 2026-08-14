@@ -644,6 +644,8 @@ static Token lex_one(Lexer* l) {
                 return make_tok(l, TK_BITNOTEQ, loc, start);
             }
             return make_tok(l, TK_BITNOT, loc, start);
+        case '#':
+            return make_tok(l, TK_HASH, loc, start);
         default:
             break;
     }
@@ -753,6 +755,14 @@ Token lexer_peek(Lexer* l) {
         l->has_peek = 1;
     }
     return l->peek_tok;
+}
+
+const char* lexer_source(Lexer* l) {
+    return l ? l->src : NULL;
+}
+
+size_t lexer_position(Lexer* l) {
+    return l ? (size_t)(l->cur - l->src) : 0;
 }
 
 const char* token_kind_str(TokenKind k) {
@@ -893,6 +903,8 @@ const char* token_kind_str(TokenKind k) {
             return "'&&='";
         case TK_LOREQ:
             return "'||='";
+        case TK_HASH:
+            return "'#'";
     }
     return "?";
 }

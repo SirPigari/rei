@@ -180,9 +180,9 @@ static IrVal ensure_alloca(IrFunc* f, VarMap* vars, const char* name, Type* type
     a->dst     = next_val(f);
 
     if (type && type->kind == TYPE_ARRAY) {
-        a->type = type_ptr(type->array_type.elem_type, false);
+        a->type = type_ptr(type->array_type.elem_type, false, false);
     } else {
-        a->type = type_ptr(type, false);
+        a->type = type_ptr(type, false, false);
     }
 
     a->alloca_slots = slots;
@@ -223,8 +223,8 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
             bool           is_fat = !is_c && !is_b;
 
             Type* u8_type  = type_number(TYPE_INT, 8, true);
-            Type* ptr_u8   = type_ptr(u8_type, false);
-            Type* fat_u8   = type_ptr(u8_type, true);
+            Type* ptr_u8   = type_ptr(u8_type, false, false);
+            Type* fat_u8   = type_ptr(u8_type, true, false);
             Type* str_type = e->type ? e->type : is_fat ? fat_u8 : ptr_u8;
 
             IrInstr* ptr_i = emit(f);
@@ -270,13 +270,13 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
             IrInstr* i = emit(f);
             i->op      = IR_NULLPTR;
             i->dst     = next_val(f);
-            i->type    = type_ptr(type_void(), false);
+            i->type    = type_ptr(type_void(), false, false);
             return i->dst;
         }
         case AST_ARRAY_LIT: {
             size_t n      = e->element_count;
             Type*  etype  = (e->type && e->type->kind == TYPE_ARRAY) ? e->type->array_type.elem_type : NULL;
-            Type*  ptype  = type_ptr(etype ? etype : type_number(TYPE_INT, 64, false), false);
+            Type*  ptype  = type_ptr(etype ? etype : type_number(TYPE_INT, 64, false), false, false);
             int    escale = etype ? type_bytes(etype) : 8;
 
             IrInstr* arr      = emit(f);
@@ -391,7 +391,6 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
 
                 Type* arg_type = e->args[a]->type;
 
-                /* Promote f32 to f64 for function calls (C convention for variadic functions) */
                 if (arg_type && arg_type->kind == TYPE_FLOAT && arg_type->bits == 32) {
                     Type*    f64_type    = type_number(TYPE_FLOAT, 64, 0);
                     IrInstr* cast        = emit(f);
@@ -433,7 +432,7 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 IrInstr* fp = emit(f);
                 fp->op      = IR_FAT_PTR;
                 fp->dst     = next_val(f);
-                fp->type    = type_ptr(e->array->type->ptr_type.elem_type, false);
+                fp->type    = type_ptr(e->array->type->ptr_type.elem_type, false, false);
                 fp->src     = array;
                 array       = fp->dst;
             }
@@ -443,11 +442,11 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
             IrInstr* gep       = emit(f);
             gep->op            = IR_GEP;
             gep->dst           = next_val(f);
-            gep->type          = type_ptr(e->type, false);
+            gep->type          = type_ptr(e->type, false, false);
             gep->gep_base      = array;
             gep->gep_idx       = index;
             gep->gep_scale     = scale;
-            gep->gep_base_type = was_fat ? type_ptr(e->array->type->ptr_type.elem_type, false) : e->array->type;
+            gep->gep_base_type = was_fat ? type_ptr(e->array->type->ptr_type.elem_type, false, false) : e->array->type;
 
             IrInstr* ld  = emit(f);
             ld->op       = IR_LOAD;
@@ -1265,7 +1264,7 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                     IrInstr* gep       = emit(f);
                     gep->op            = IR_GEP;
                     gep->dst           = next_val(f);
-                    gep->type          = type_ptr(elem_type, false);
+                    gep->type          = type_ptr(elem_type, false, false);
                     gep->gep_base      = gep_base;
                     gep->gep_idx       = idx_var;
                     gep->gep_scale     = elem_scale;
@@ -1362,7 +1361,7 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                             IrInstr* gep   = emit(f);
                             gep->op        = IR_GEP;
                             gep->dst       = next_val(f);
-                            gep->type      = type_ptr(elem_type, false);
+                            gep->type      = type_ptr(elem_type, false, false);
                             gep->gep_base  = ptr;
                             gep->gep_idx   = idx_i->dst;
                             gep->gep_scale = elem_scale;
@@ -1535,7 +1534,7 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                     IrInstr* fp = emit(f);
                     fp->op      = IR_FAT_PTR;
                     fp->dst     = next_val(f);
-                    fp->type    = type_ptr(s->assign_target->array->type->ptr_type.elem_type, false);
+                    fp->type    = type_ptr(s->assign_target->array->type->ptr_type.elem_type, false, false);
                     fp->src     = array;
                     array       = fp->dst;
                 }
@@ -1553,11 +1552,11 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                 IrInstr* gep       = emit(f);
                 gep->op            = IR_GEP;
                 gep->dst           = next_val(f);
-                gep->type          = type_ptr(elem_type ? elem_type : s->assign_value->type, false);
+                gep->type          = type_ptr(elem_type ? elem_type : s->assign_value->type, false, false);
                 gep->gep_base      = array;
                 gep->gep_idx       = index;
                 gep->gep_scale     = scale;
-                gep->gep_base_type = was_fat_assign ? type_ptr(s->assign_target->array->type->ptr_type.elem_type, false)
+                gep->gep_base_type = was_fat_assign ? type_ptr(s->assign_target->array->type->ptr_type.elem_type, false, false)
                                                     : s->assign_target->array->type;
 
                 IrVal new_val = assign_val;

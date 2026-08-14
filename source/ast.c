@@ -38,10 +38,17 @@ Type* type_void(void) {
     return t;
 }
 
-Type* type_ptr(Type* elem, bool is_fat) {
+Type* type_never(void) {
+    Type* t = calloc(1, sizeof(*t));
+    t->kind = TYPE_NEVER;
+    return t;
+}
+
+Type* type_ptr(Type* elem, bool is_fat, bool non_null) {
     Type* t               = calloc(1, sizeof(*t));
     t->kind               = TYPE_PTR;
     t->ptr_type.is_fat    = is_fat;
+    t->ptr_type.non_null  = non_null;
     t->ptr_type.elem_type = elem;
     return t;
 }
@@ -87,7 +94,7 @@ void type_to_string(Type* t, char* buf, size_t buf_size) {
             if (t->ptr_type.is_fat)
                 snprintf(buf, buf_size, "[]");
             else
-                snprintf(buf, buf_size, "*");
+                snprintf(buf, buf_size, "*%s", t->ptr_type.non_null ? "!" : "");
             type_to_string(t->ptr_type.elem_type, buf + strlen(buf), buf_size - strlen(buf));
             return;
         case TYPE_ARRAY:
@@ -96,6 +103,12 @@ void type_to_string(Type* t, char* buf, size_t buf_size) {
             if (t->array_type.len)
                 snprintf(buf + strlen(buf), buf_size - strlen(buf), "; %zu", t->array_type.len);
             snprintf(buf + strlen(buf), buf_size - strlen(buf), "]");
+            return;
+        case TYPE_NEVER:
+            snprintf(buf, buf_size, "!");
+            return;
+        case TYPE_IDENT:
+            snprintf(buf, buf_size, "%s", t->ident_type.name);
             return;
         case TYPE_UNSUPPORTED:
             snprintf(buf, buf_size, "<unsupported>");
@@ -294,20 +307,7 @@ static void dump_expr(AstNode* n, int ind) {
 }
 
 static void dump_stmt(AstNode* s, int ind) {
-    printf("%*s", ind, "");
     switch (s->kind) {
-        case AST_EXPR_STMT:
-            dump_expr(s->expr, ind);
-            printf(";\n");
-            break;
-        case AST_RETURN_STMT:
-            printf("return");
-            if (s->ret_val) {
-                printf(" ");
-                dump_expr(s->ret_val, ind);
-            }
-            printf(";\n");
-            break;
         case AST_BLOCK_STMT:
             printf("{\n");
             for (int i = 0; i < s->stmt_count; i++) {
@@ -315,23 +315,37 @@ static void dump_stmt(AstNode* s, int ind) {
             }
             printf("%*s}\n", ind, "");
             break;
+        case AST_EXPR_STMT:
+            printf("%*s", ind, "");
+            dump_expr(s->expr, ind);
+            printf(";\n");
+            break;
+        case AST_RETURN_STMT:
+            printf("%*sreturn", ind, "");
+            if (s->ret_val) {
+                printf(" ");
+                dump_expr(s->ret_val, ind);
+            }
+            printf(";\n");
+            break;
         case AST_IF_STMT:
-            printf("if (");
+            printf("%*sif (", ind, "");
             dump_expr(s->if_cond, 0);
-            printf(")\n");
-            dump_stmt(s->then_branch, ind + 4);
+            printf(") ");
+            dump_stmt(s->then_branch, ind);
             if (s->else_branch) {
-                printf("else\n");
-                dump_stmt(s->else_branch, ind + 4);
+                printf("%*selse ", ind, "");
+                dump_stmt(s->else_branch, ind);
             }
             break;
         case AST_WHILE_STMT:
-            printf("while (");
+            printf("%*swhile (", ind, "");
             dump_expr(s->while_cond, 0);
-            printf(")\n");
-            dump_stmt(s->while_body, ind + 4);
+            printf(") ");
+            dump_stmt(s->while_body, ind);
             break;
         case AST_ASSIGN: {
+            printf("%*s", ind, "");
             dump_expr(s->assign_target, ind);
             printf(" ");
             switch (s->assign_op) {
@@ -386,7 +400,7 @@ static void dump_stmt(AstNode* s, int ind) {
             break;
         }
         case AST_VAR_DECL:
-            printf("%s: ", s->var_name);
+            printf("%*s%s: ", ind, "", s->var_name);
             print_type(s->var_type);
             if (s->init) {
                 printf(" = ");
@@ -395,7 +409,7 @@ static void dump_stmt(AstNode* s, int ind) {
             printf(";\n");
             break;
         case AST_CONST_DECL:
-            printf("%s :: ", s->var_name);
+            printf("%*s%s :: ", ind, "", s->var_name);
             print_type(s->var_type);
             if (s->init) {
                 printf(" = ");
@@ -404,7 +418,7 @@ static void dump_stmt(AstNode* s, int ind) {
             printf(";\n");
             break;
         default:
-            printf("?stmt(%d)\n", s->kind);
+            printf("%*s?stmt(%d)\n", ind, "", s->kind);
             break;
     }
 }
@@ -418,8 +432,12 @@ void ast_dump(Module* m) {
                 for (int p = 0; p < d->param_count; p++) {
                     if (p)
                         printf(", ");
-                    printf("%s: ", d->params[p].name);
-                    print_type(d->params[p].type);
+                    if (d->params[p].name)
+                        printf("%s: ", d->params[p].name);
+                    if (d->params[p].type)
+                        print_type(d->params[p].type);
+                    if (d->params[p].is_variadic)
+                        printf(" ...");
                 }
                 printf(") -> ");
                 print_type(d->ret_type);
@@ -430,8 +448,12 @@ void ast_dump(Module* m) {
                 for (int p = 0; p < d->param_count; p++) {
                     if (p)
                         printf(", ");
-                    printf("%s: ", d->params[p].name);
-                    print_type(d->params[p].type);
+                    if (d->params[p].name)
+                        printf("%s: ", d->params[p].name);
+                    if (d->params[p].type)
+                        print_type(d->params[p].type);
+                    if (d->params[p].is_variadic)
+                        printf(" ...");
                 }
                 printf(") -> ");
                 print_type(d->ret_type);
@@ -456,6 +478,20 @@ void ast_dump(Module* m) {
                     dump_expr(d->init, 0);
                 }
                 printf(";\n");
+                break;
+            case AST_ANNOTATION:
+                printf("#%s", d->annot_type == -1 ? "unknown" : 
+                    (d->annot_type == ANNOT_NO_MANGLE ? "no_mangle" :
+                    d->annot_type == ANNOT_PRINTF_LIKE ? "printf_like" :
+                    d->annot_type == ANNOT_SCANF_LIKE ? "scanf_like" :
+                    d->annot_type == ANNOT_STRFTIME_LIKE ? "strftime_like" :
+                    d->annot_type == ANNOT_DEPRECATED ? "deprecated" :
+                    d->annot_type == ANNOT_INLINE ? "inline" :
+                    d->annot_type == ANNOT_SENTINEL ? "sentinel" :
+                    d->annot_type == ANNOT_LINK_NAME ? "link_name" : "?"));
+                if (d->annot_str)
+                    printf("(%s)", d->annot_str);
+                printf("\n");
                 break;
             default:
                 printf("?decl(%d)\n", d->kind);

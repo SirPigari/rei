@@ -71,6 +71,7 @@ typedef enum {
     TK_PERCENT,    /* %   */
     TK_STARSTAR,   /* **  */
 
+    TK_HASH,       /* #   */
     TK_BITAND,     /* &   */
     TK_BITOR,      /* |   */
     TK_BITXOR,     /* ^   */
@@ -120,5 +121,7 @@ Token       lexer_next(Lexer* l);
 Token       lexer_peek(Lexer* l);
 void        lexer_put_back(Lexer* l, Token t);
 const char* lexer_filename(Lexer* l);
+const char* lexer_source(Lexer* l);
+size_t      lexer_position(Lexer* l);
 
 const char* token_kind_str(TokenKind k);

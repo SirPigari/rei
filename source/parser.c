@@ -19,20 +19,35 @@ static char* tok_str(Token t) {
 }
 
 static bool is_type_start(TokenKind kind) {
-    return kind == TK_IDENT || kind == TK_STAR || kind == TK_STARSTAR || kind == TK_LBRACKET;
+    return kind == TK_IDENT || kind == TK_STAR || kind == TK_STARSTAR || kind == TK_LBRACKET || kind == TK_BANG;
 }
 
 static Type* parse_type(Lexer* l) {
     Token pk = lexer_peek(l);
 
+    if (pk.kind == TK_BANG) {
+        lexer_next(l);
+        return type_never();
+    }
+
     if (pk.kind == TK_STAR) {
         lexer_next(l);
-        return type_ptr(parse_type(l), false);
+        bool non_null = false;
+        if (lexer_peek(l).kind == TK_BANG) {
+            lexer_next(l);
+            non_null = true;
+        }
+        return type_ptr(parse_type(l), false, non_null);
     }
 
     if (pk.kind == TK_STARSTAR) {
         lexer_next(l);
-        return type_ptr(type_ptr(parse_type(l), false), false);
+        bool non_null = false;
+        if (lexer_peek(l).kind == TK_BANG) {
+            lexer_next(l);
+            non_null = true;
+        }
+        return type_ptr(type_ptr(parse_type(l), false, false), false, non_null);
     }
 
     if (pk.kind == TK_LBRACKET) {
@@ -41,7 +56,7 @@ static Type* parse_type(Lexer* l) {
 
         if (lexer_peek(l).kind == TK_RBRACKET) {
             lexer_next(l);
-            return type_ptr(parse_type(l), true);
+            return type_ptr(parse_type(l), true, false);
         }
 
         Type* elem = parse_type(l);
@@ -696,6 +711,79 @@ static AstNode* parse_one_extern(Lexer* l) {
     return n;
 }
 
+static AnnotationType parse_annotation_name(const char* name_str, size_t name_len) {
+    if (name_len == 9 && memcmp(name_str, "no_mangle", 9) == 0)
+        return ANNOT_NO_MANGLE;
+    if (name_len == 12 && memcmp(name_str, "printf_like", 12) == 0)
+        return ANNOT_PRINTF_LIKE;
+    if (name_len == 11 && memcmp(name_str, "scanf_like", 11) == 0)
+        return ANNOT_SCANF_LIKE;
+    if (name_len == 13 && memcmp(name_str, "strftime_like", 13) == 0)
+        return ANNOT_STRFTIME_LIKE;
+    if (name_len == 10 && memcmp(name_str, "deprecated", 10) == 0)
+        return ANNOT_DEPRECATED;
+    if (name_len == 6 && memcmp(name_str, "inline", 6) == 0)
+        return ANNOT_INLINE;
+    if (name_len == 8 && memcmp(name_str, "sentinel", 8) == 0)
+        return ANNOT_SENTINEL;
+    if (name_len == 9 && memcmp(name_str, "link_name", 9) == 0)
+        return ANNOT_LINK_NAME;
+    return (AnnotationType)-1; /* unknown */
+}
+
+static AstNode* parse_annotation(Lexer* l) {
+    Location loc = lexer_peek(l).loc;
+    expect(l, TK_HASH);
+    Token annot_name_tok = expect(l, TK_IDENT);
+    
+    AstNode* n = ast_node(AST_ANNOTATION, loc);
+    n->annot_type = parse_annotation_name(annot_name_tok.start, annot_name_tok.len);
+
+    if (n->annot_type == (AnnotationType)-1) {
+        diag_emit(DIAG_ERROR, annot_name_tok.loc, "unknown annotation: %.*s", (int)annot_name_tok.len,
+                  annot_name_tok.start);
+    }
+    
+    if (lexer_peek(l).kind == TK_LPAREN) {
+        lexer_next(l);
+        
+        const char* src = lexer_source(l);
+        size_t start_pos = lexer_position(l);
+        
+        int paren_depth = 1;
+        size_t end_pos = start_pos;
+        
+        while (paren_depth > 0 && src[end_pos] != '\0') {
+            if (src[end_pos] == '(') {
+                paren_depth++;
+            } else if (src[end_pos] == ')') {
+                paren_depth--;
+                if (paren_depth == 0) break;
+            }
+            end_pos++;
+        }
+        
+        size_t len = end_pos - start_pos;
+        if (len == 0) {
+            n->annot_str = "";
+        } else {
+            char* str = malloc(len + 1);
+            memcpy(str, src + start_pos, len);
+            str[len] = '\0';
+            n->annot_str = str;
+        }
+        
+        while (lexer_peek(l).kind != TK_RPAREN && lexer_peek(l).kind != TK_EOF) {
+            lexer_next(l);
+        }
+        expect(l, TK_RPAREN);
+    } else {
+        n->annot_str = NULL;
+    }
+    
+    return n;
+}
+
 static void parse_extern(Lexer* l, AstNode*** decls, int* count, int* cap) {
 #define PUSH(d)                                                \
     do {                                                       \
@@ -738,6 +826,15 @@ Module* parse(Lexer* l) {
         Token t = lexer_peek(l);
         if (t.kind == TK_EOF)
             break;
+        
+        while (lexer_peek(l).kind == TK_HASH) {
+            PUSH_DECL(parse_annotation(l));
+        }
+        
+        t = lexer_peek(l);
+        if (t.kind == TK_EOF)
+            break;
+        
         if (t.kind == TK_EXTERN) {
             lexer_next(l);
             parse_extern(l, &decls, &count, &cap);

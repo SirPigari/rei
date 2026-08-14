@@ -404,18 +404,18 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 Type* u8    = type_number(TYPE_INT, 8, true);
                 int   flags = e->str_flags;
                 if (flags & STR_PREFIX_C)
-                    e->type = type_ptr(u8, false); /* *u8  */
+                    e->type = type_ptr(u8, false, false); /* *u8  */
                 else if (flags & STR_PREFIX_B)
                     e->type = type_array(u8, 0);   /* [u8] */
                 else
-                    e->type = type_ptr(u8, true);  /* []u8 */
+                    e->type = type_ptr(u8, true, false);  /* []u8 */
             }
             return e->type;
         }
 
         case AST_NULLPTR: {
             if (!e->type) {
-                e->type = type_ptr(type_void(), false);
+                e->type = type_ptr(type_void(), false, false);
             }
             return e->type;
         }
@@ -756,9 +756,9 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
                 case UOP_ADDR: {
                     if (t && t->kind == TYPE_ARRAY) {
-                        e->type = type_ptr(t->array_type.elem_type, false);
+                        e->type = type_ptr(t->array_type.elem_type, false, false);
                     } else {
-                        e->type = type_ptr(t, false);
+                        e->type = type_ptr(t, false, false);
                     }
                     break;
                     ;
