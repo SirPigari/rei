@@ -382,8 +382,14 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
             return IR_NO_VAL;
         }
         case AST_CALL: {
-            IrVal* arg_vals  = e->arg_count ? malloc(e->arg_count * sizeof(IrVal)) : NULL;
-            Type** arg_types = e->arg_count ? malloc(e->arg_count * sizeof(Type*)) : NULL;
+            int total_arg_count = e->arg_count;
+            if (e->func_decl != NULL && e->arg_count < e->func_decl->param_count) {
+                total_arg_count = e->func_decl->param_count;
+            }
+
+            IrVal* arg_vals  = total_arg_count ? malloc(total_arg_count * sizeof(IrVal)) : NULL;
+            Type** arg_types = total_arg_count ? malloc(total_arg_count * sizeof(Type*)) : NULL;
+
             for (int a = 0; a < e->arg_count; a++) {
                 IrVal v = lower_expr(m, f, e->args[a], vars);
                 if (v == IR_NO_VAL)
@@ -406,11 +412,41 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 arg_vals[a]  = v;
                 arg_types[a] = arg_type;
             }
+
+            if (e->func_decl != NULL && e->arg_count < e->func_decl->param_count) {
+                for (int a = e->arg_count; a < e->func_decl->param_count; a++) {
+                    AstNode* default_expr = e->func_decl->params[a].default_value;
+                    if (default_expr == NULL)
+                        ICE("parameter %d has no default value but is missing from call", a);
+
+                    IrVal v = lower_expr(m, f, default_expr, vars);
+                    if (v == IR_NO_VAL)
+                        ICE("default argument lowered to IR_NO_VAL");
+
+                    Type* arg_type = default_expr->type;
+
+                    if (arg_type && arg_type->kind == TYPE_FLOAT && arg_type->bits == 32) {
+                        Type*    f64_type    = type_number(TYPE_FLOAT, 64, 0);
+                        IrInstr* cast        = emit(f);
+                        cast->op             = IR_CAST;
+                        cast->dst            = next_val(f);
+                        cast->type           = f64_type;
+                        cast->cast_src       = v;
+                        cast->cast_from_type = arg_type;
+                        v                    = cast->dst;
+                        arg_type             = f64_type;
+                    }
+
+                    arg_vals[a]  = v;
+                    arg_types[a] = arg_type;
+                }
+            }
+
             IrInstr* i        = emit(f);
             i->op             = IR_CALL;
             i->type           = e->type;
             i->call.name      = e->callee;
-            i->call.arg_count = e->arg_count;
+            i->call.arg_count = total_arg_count;
             i->call.args      = arg_vals;
             i->call.arg_types = arg_types;
             if (e->type && e->type->kind != TYPE_VOID)

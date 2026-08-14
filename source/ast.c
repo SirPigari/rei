@@ -436,7 +436,7 @@ void ast_dump(Module* m) {
                         printf("%s: ", d->params[p].name);
                     if (d->params[p].type)
                         print_type(d->params[p].type);
-                    if (d->params[p].is_variadic)
+                    if (d->is_variadic && p == d->param_count - 1)
                         printf(" ...");
                 }
                 printf(") -> ");
@@ -455,7 +455,7 @@ void ast_dump(Module* m) {
                         printf("%s: ", d->params[p].name);
                     if (d->params[p].type)
                         print_type(d->params[p].type);
-                    if (d->params[p].is_variadic)
+                    if (d->is_variadic && p == d->param_count - 1)
                         printf(" ...");
                 }
                 printf(") -> ");

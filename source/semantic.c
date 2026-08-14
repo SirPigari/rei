@@ -36,6 +36,9 @@ static bool types_equal(Type* a, Type* b) {
             return strcmp(a->ident_type.name, b->ident_type.name) == 0;
         case TYPE_UNSUPPORTED:
             return false;
+        default:
+            ICE("unknown type kind %d", a->kind);
+            return false;
     }
     return false;
 }
@@ -92,8 +95,14 @@ static char* type_str(Type* t, char* buf, size_t cap) {
         case TYPE_IDENT:
             snprintf(buf, cap, "%s", t->ident_type.name);
             break;
+        case TYPE_NEVER:
+            snprintf(buf, cap, "never");
+            break;
         case TYPE_UNSUPPORTED:
             snprintf(buf, cap, "<unsupported>");
+            break;
+        default:
+            ICE("unknown type kind %d", t->kind);
             break;
     }
     return buf;
@@ -761,33 +770,54 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
             AstNode* fn = sym->decl;
 
             int variadic_index = -1;
+            if (fn->param_count > 0 && fn->is_variadic) {
+                variadic_index = fn->param_count - 1;
+            }
+
+            int required_param_count = 0;
             for (int i = 0; i < fn->param_count; i++) {
-                if (fn->params[i].is_variadic) {
-                    variadic_index = i;
+                if (variadic_index != -1 && i >= variadic_index) {
+                    break;
+                }
+                if (fn->params[i].default_value == NULL) {
+                    required_param_count++;
+                } else {
                     break;
                 }
             }
 
             if (variadic_index == -1) {
-                if (e->arg_count != fn->param_count)
-                    diag_emit(
-                        DIAG_ERROR,
-                        e->loc,
-                        "'%s' expects %d arg(s), got %d",
-                        fn->function_name,
-                        fn->param_count,
-                        e->arg_count
-                    );
-            } else {
-                if (e->arg_count < variadic_index)
-                    diag_emit(
-                        DIAG_ERROR,
-                        e->loc,
-                        "'%s' expects at least %d arg(s), got %d",
-                        fn->function_name,
-                        variadic_index,
-                        e->arg_count
-                    );
+                if (e->arg_count < required_param_count || e->arg_count > fn->param_count) {
+                    if (required_param_count == fn->param_count) {
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->loc,
+                            "'%s' expects %d arg(s), got %d",
+                            fn->function_name,
+                            required_param_count,
+                            e->arg_count
+                        );
+                    } else {
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->loc,
+                            "'%s' expects %d to %d arg(s), got %d",
+                            fn->function_name,
+                            required_param_count,
+                            fn->param_count,
+                            e->arg_count
+                        );
+                    }
+                }
+            } else if (e->arg_count < required_param_count) {
+                diag_emit(
+                    DIAG_ERROR,
+                    e->loc,
+                    "'%s' expects at least %d arg(s), got %d",
+                    fn->function_name,
+                    required_param_count,
+                    e->arg_count
+                );
             }
 
             for (int i = 0; i < e->arg_count; i++) {
@@ -832,15 +862,12 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 }
             }
 
-            if (fn->is_printf_like && fn->printf_fmt_param_idx >= 0 && fn->printf_fmt_param_idx < e->arg_count) {
-                AstNode* fmt_arg = e->args[fn->printf_fmt_param_idx];
+            if (fn->is_printf_like && fn->param_idx >= 0 && fn->param_idx < e->arg_count) {
+                AstNode* fmt_arg = e->args[fn->param_idx];
                 if (fmt_arg->kind == AST_STRING_LIT) {
-                    int variadic_start = fn->printf_fmt_param_idx;
-                    for (int i = 0; i < fn->param_count; i++) {
-                        if (fn->params[i].is_variadic) {
-                            variadic_start = i;
-                            break;
-                        }
+                    int variadic_start = variadic_index;
+                    if (variadic_start == -1) {
+                        variadic_start = fn->param_count;
                     }
                     int variadic_arg_count = e->arg_count - variadic_start;
                     check_printf_format(
@@ -849,6 +876,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 }
             }
 
+            e->func_decl = fn;
             e->type = resolve_type(fn->ret_type, sc);
             return e->type;
         }
@@ -1305,15 +1333,6 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
 static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
     switch (s->kind) {
-        case AST_VAR_DECL:
-            break;
-        case AST_CONST_DECL:
-            break;
-        default:
-            break;
-    }
-
-    switch (s->kind) {
         case AST_EXPR_STMT:
             check_expr(s->expr, sc);
             break;
@@ -1452,8 +1471,7 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                         diag_emit(
                             DIAG_ERROR,
                             s->init->loc,
-                            "initializer type mismatch: variable '%s' has type %s, "
-                            "initializer has type %s",
+                            "variable '%s': expected %s, initializer has type %s",
                             s->var_name,
                             type_str(s->var_type, vs, sizeof(vs)),
                             type_str(it, is, sizeof(is))
@@ -1499,13 +1517,12 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                     it          = s->var_type;
                 }
 
-                if (it && !types_equal(it, s->var_type)) {
+                if (it && !types_equal(it, s->var_type) && !types_assignable(it, s->var_type)) {
                     char is[64], vs[64];
                     diag_emit(
                         DIAG_ERROR,
                         s->init->loc,
-                        "initializer type mismatch: constant '%s' has type %s, "
-                        "initializer has type %s",
+                        "constant '%s': expected %s, initializer has type %s",
                         s->var_name,
                         type_str(s->var_type, vs, sizeof(vs)),
                         type_str(it, is, sizeof(is))
@@ -1744,34 +1761,96 @@ static bool validate_variadic_params(AstNode* func_decl) {
     if (!func_decl || (func_decl->kind != AST_FUNC_DECL && func_decl->kind != AST_EXTERN_DECL))
         return true;
 
-    int variadic_index = -1;
-    for (int i = 0; i < func_decl->param_count; i++) {
-        if (func_decl->params[i].is_variadic) {
-            if (variadic_index != -1) {
-                diag_emit(DIAG_ERROR, func_decl->loc, "only the last parameter can be variadic");
-                return false;
-            }
-            variadic_index = i;
-        }
-    }
-
-    if (variadic_index != -1) {
-        if (variadic_index != func_decl->param_count - 1) {
-            diag_emit(
-                DIAG_ERROR, func_decl->params[variadic_index].loc, "variadic parameter must be the last parameter"
-            );
-            return false;
-        }
-
-        if (func_decl->params[variadic_index].name != NULL) {
-            Type* var_type = func_decl->params[variadic_index].type;
+    if (func_decl->is_variadic && func_decl->param_count > 0) {
+        Param* var_param = &func_decl->params[func_decl->param_count - 1];
+        if (var_param->name != NULL) {
+            Type* var_type = var_param->type;
             if (!var_type || var_type->kind != TYPE_ARRAY) {
                 char ts[64];
                 diag_emit(
                     DIAG_ERROR,
-                    func_decl->params[variadic_index].loc,
+                    var_param->loc,
                     "variadic parameter must have array type, got %s",
                     type_str(var_type, ts, sizeof(ts))
+                );
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool is_compile_time_expr(AstNode* expr) {
+    if (!expr)
+        return false;
+
+    switch (expr->kind) {
+        case AST_INT_LIT:
+        case AST_FLOAT_LIT:
+        case AST_STRING_LIT:
+        case AST_NULLPTR:
+        case AST_TYPE_LIT:
+            return true;
+        case AST_ARRAY_LIT:
+            for (int i = 0; i < expr->element_count; i++) {
+                if (!is_compile_time_expr(expr->elements[i]))
+                    return false;
+            }
+            return true;
+        case AST_CAST:
+            return is_compile_time_expr(expr->cast_expr);
+        case AST_UNOP:
+            return is_compile_time_expr(expr->operand);
+        case AST_BINOP:
+            return is_compile_time_expr(expr->lhs) && is_compile_time_expr(expr->rhs);
+        case AST_RANGE:
+            return is_compile_time_expr(expr->range_start) &&
+                   is_compile_time_expr(expr->range_end) &&
+                   (!expr->range_step || is_compile_time_expr(expr->range_step));
+        default:
+            return false;
+    }
+}
+
+static bool validate_default_args(AstNode* func_decl) {
+    if (!func_decl || (func_decl->kind != AST_FUNC_DECL && func_decl->kind != AST_EXTERN_DECL))
+        return true;
+
+    if (func_decl->is_variadic) {
+        for (int i = 0; i < func_decl->param_count; i++) {
+            if (func_decl->params[i].default_value) {
+                diag_emit(
+                    DIAG_ERROR,
+                    func_decl->params[i].loc,
+                    "variadic functions cannot have default arguments"
+                );
+                return false;
+            }
+        }
+    }
+
+    bool found_default = false;
+    for (int i = 0; i < func_decl->param_count; i++) {
+        if (func_decl->params[i].default_value) {
+            found_default = true;
+        } else if (found_default) {
+            diag_emit(
+                DIAG_ERROR,
+                func_decl->params[i].loc,
+                "non-default parameter follows default parameter"
+            );
+            return false;
+        }
+    }
+
+    for (int i = 0; i < func_decl->param_count; i++) {
+        if (func_decl->params[i].default_value) {
+            if (!is_compile_time_expr(func_decl->params[i].default_value)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    func_decl->params[i].loc,
+                    "default argument must be a compile-time constant"
                 );
                 return false;
             }
@@ -1928,8 +2007,7 @@ static bool check_annotation(AstNode* annot, AstNode* target) {
                 return false;
             }
 
-            Param* last_param = &target->params[target->param_count - 1];
-            if (!last_param->is_variadic) {
+            if (!target->is_variadic) {
                 diag_emit(
                     DIAG_ERROR, annot->loc, "printf_like cannot be used on functions without variadic parameters"
                 );
@@ -1937,7 +2015,7 @@ static bool check_annotation(AstNode* annot, AstNode* target) {
             }
 
             target->is_printf_like       = 1;
-            target->printf_fmt_param_idx = fmt_param_idx;
+            target->param_idx = fmt_param_idx;
 
             return true;
         }
@@ -2161,6 +2239,7 @@ int semantic_check(Module* m, const CompileConfig* config) {
         AstNode* d = m->decls[i];
         if (d->kind == AST_FUNC_DECL || d->kind == AST_EXTERN_DECL) {
             validate_variadic_params(d);
+            validate_default_args(d);
             if (scope_lookup(global, d->function_name))
                 diag_emit(DIAG_ERROR, d->loc, "redefinition of '%s'", d->function_name);
             else
@@ -2221,7 +2300,7 @@ int semantic_check(Module* m, const CompileConfig* config) {
                 diag_emit(
                     DIAG_ERROR,
                     d->init->loc,
-                    "initializer type mismatch: '%s' has type %s, initializer has type %s",
+                    "global '%s': expected %s, initializer has type %s",
                     d->var_name,
                     type_str(d->var_type, vs, sizeof(vs)),
                     type_str(it, is, sizeof(is))
@@ -2237,7 +2316,7 @@ int semantic_check(Module* m, const CompileConfig* config) {
                     diag_emit(
                         DIAG_ERROR,
                         d->init->loc,
-                        "initializer type mismatch: '%s' has type %s, initializer has type %s",
+                        "global '%s': expected %s, initializer has type %s",
                         d->var_name,
                         type_str(d->var_type, vs, sizeof(vs)),
                         type_str(it, is, sizeof(is))

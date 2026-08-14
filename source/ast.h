@@ -61,13 +61,6 @@ Type* type_array(Type* elem, size_t len);
 Type* type_abstract_int(void);
 Type* type_ident(const char* name);
 
-typedef struct {
-    char*    name; /* NULL = unnamed */
-    Type*    type;
-    bool     is_variadic;
-    Location loc;
-} Param;
-
 typedef enum {
     AST_FUNC_DECL,   /* name :: (params) -> ret { body }  */
     AST_EXTERN_DECL, /* extern name(params) -> ret        */
@@ -169,6 +162,13 @@ typedef enum {
 
 typedef struct AstNode AstNode;
 
+typedef struct {
+    char*    name; /* NULL = unnamed */
+    Type*    type;
+    AstNode* default_value; /* NULL = no default value */
+    Location loc;
+} Param;
+
 struct AstNode {
     AstKind  kind;
     Location loc;
@@ -182,8 +182,9 @@ struct AstNode {
             Type*    ret_type;
             AstNode* body; /* NULL = decl */
             unsigned is_extern      : 1;
+            unsigned is_variadic    : 1;
             unsigned is_printf_like : 1;
-            int      printf_fmt_param_idx; /* which param is the format string */
+            int      param_idx;   /* for printf and others */
         };
 
         /* AST_VAR_DECL, AST_CONST_DECL */
@@ -307,6 +308,7 @@ struct AstNode {
             char*     callee;
             AstNode** args;
             int       arg_count;
+            AstNode*  func_decl; /* semantic fills in */
         };
 
         /* AST_BINOP */

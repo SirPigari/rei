@@ -13,7 +13,7 @@ N :: 100;
 
 display :: (base: *u8) -> void {
     i: i32 = 0;
-    while (i < N) {
+    while i < N {
         if base[i]
             putchar('#');
         else
@@ -26,7 +26,7 @@ display :: (base: *u8) -> void {
 next :: (base: *u8) -> void {
     state: u8 = base[0] | base[1] << 1;
     i: i32 = 2;
-    while (i < N) {
+    while i < N {
         state <<= 1;
         state |= base[i];
         state &= 0b111;
@@ -42,7 +42,7 @@ main :: () -> i32 {
     i: i32 = 0;
 
     display(base);
-    while (i < N - 3) {
+    while i < N - 3 {
         next(base);
         display(base);
         i++;

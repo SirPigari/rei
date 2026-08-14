@@ -620,9 +620,10 @@ static AstNode* parse_stmt(Lexer* l) {
     return n;
 }
 
-static void parse_params(Lexer* l, Param** out, int* count) {
+static void parse_params(Lexer* l, Param** out, int* count, bool* has_variadic) {
     int cap       = 8;
     *count        = 0;
+    *has_variadic = false;
     Param* params = malloc(cap * sizeof(Param));
     while (lexer_peek(l).kind != TK_RPAREN && lexer_peek(l).kind != TK_EOF) {
         if (*count >= cap) {
@@ -641,14 +642,24 @@ static void parse_params(Lexer* l, Param** out, int* count) {
                 expect(l, TK_COLON);
                 params[*count].name        = tok_str(name_tok);
                 params[*count].type        = parse_type(l);
-                params[*count].is_variadic = true;
                 params[*count].loc         = name_tok.loc;
+                params[*count].default_value = NULL;
+                *has_variadic = true;
             } else {
                 params[*count].name        = NULL;
                 params[*count].type        = NULL;
-                params[*count].is_variadic = true;
                 params[*count].loc         = loc;
+                params[*count].default_value = NULL;
+                *has_variadic = true;
             }
+            (*count)++;
+            
+            /* TODO: properly check for ) not just a comma since ...,) should be allowed */
+            if (lexer_peek(l).kind == TK_COMMA) {
+                diag_emit(DIAG_ERROR, lexer_peek(l).loc, "variadic parameter must be the last parameter");
+                lexer_next(l); 
+            }
+            break;
         } else if (first.kind == TK_DOTDOT) {
             lexer_next(l);
             diag_emit(DIAG_ERROR, first.loc, "unexpected '..' in parameter list");
@@ -659,19 +670,22 @@ static void parse_params(Lexer* l, Param** out, int* count) {
                 lexer_next(l);
                 params[*count].name        = tok_str(first);
                 params[*count].type        = parse_type(l);
-                params[*count].is_variadic = false;
             } else {
                 lexer_put_back(l, first);
                 params[*count].name        = NULL;
                 params[*count].type        = parse_type(l);
-                params[*count].is_variadic = false;
             }
             params[*count].loc = first.loc;
         } else {
             params[*count].name        = NULL;
             params[*count].type        = parse_type(l);
-            params[*count].is_variadic = false;
             params[*count].loc         = first.loc;
+        }
+
+        params[*count].default_value = NULL;
+        if (lexer_peek(l).kind == TK_EQ) {
+            lexer_next(l);
+            params[*count].default_value = parse_expr(l);
         }
 
         (*count)++;
@@ -688,7 +702,9 @@ static AstNode* parse_func_decl(Lexer* l, Token name_tok) {
     AstNode* n       = ast_node(AST_FUNC_DECL, name_tok.loc);
     n->function_name = tok_str(name_tok);
 
-    parse_params(l, &n->params, &n->param_count);
+    bool is_variadic = false;
+    parse_params(l, &n->params, &n->param_count, &is_variadic);
+    n->is_variadic = is_variadic;
 
     expect(l, TK_RPAREN);
     expect(l, TK_ARROW);
@@ -708,7 +724,9 @@ static AstNode* parse_one_extern(Lexer* l) {
     expect(l, TK_LPAREN);
     AstNode* n       = ast_node(AST_EXTERN_DECL, loc);
     n->function_name = tok_str(name_tok);
-    parse_params(l, &n->params, &n->param_count);
+    bool is_variadic = false;
+    parse_params(l, &n->params, &n->param_count, &is_variadic);
+    n->is_variadic = is_variadic;
     expect(l, TK_RPAREN);
     expect(l, TK_ARROW);
     n->ret_type = parse_type(l);
@@ -899,7 +917,9 @@ Module* parse(Lexer* l) {
                     decl->function_name = tok_str(name);
 
                     expect(l, TK_LPAREN);
-                    parse_params(l, &decl->params, &decl->param_count);
+                    bool is_variadic = false;
+                    parse_params(l, &decl->params, &decl->param_count, &is_variadic);
+                    decl->is_variadic = is_variadic;
                     expect(l, TK_RPAREN);
                     expect(l, TK_ARROW);
                     decl->ret_type = parse_type(l);

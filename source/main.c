@@ -43,7 +43,7 @@ static char* read_file(const char* path) {
 static void usage(FILE* stream, const char* argv0) {
     fprintf(
         stream,
-        "Usage: %s [options] <source.rei>\n"
+        "Usage: %s [options] <source.rei> [-- <program_args>]\n"
         "Options:\n"
         "  -o <file>          output file\n"
         "  -t <target>        codegen target (default: x86_64-linux)\n"
@@ -57,7 +57,11 @@ static void usage(FILE* stream, const char* argv0) {
         "  --run, -r          run compiled output\n"
         "  --no-rei-main      treat main as C main instead of rei__main\n"
         "  --no-main          skip main function checking\n"
-        "  --help, -h         show this message\n",
+        "  --help, -h         show this message\n"
+        "\n"
+        "Program arguments: pass arguments to the compiled program by using -- before them\n"
+        "Example: %s -r program.rei -- arg1 arg2 arg3\n",
+        argv0,
         argv0
     );
     exit(1);
@@ -166,6 +170,8 @@ int main(int argc, char** argv) {
     const char* src_path    = NULL;
     const char* out_path    = NULL;
     const char* target_name = "x86_64-linux";
+    char**      prog_args   = NULL;
+    int         prog_argc   = 0;
 
     bool dump_ast     = false;
     bool dump_ir      = false;
@@ -180,7 +186,11 @@ int main(int argc, char** argv) {
     bool no_libm      = false;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "--") == 0) {
+            prog_args = &argv[i + 1];
+            prog_argc = argc - i - 1;
+            break;
+        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             out_path = argv[++i];
         } else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
             target_name = argv[++i];
@@ -369,9 +379,12 @@ int main(int argc, char** argv) {
     fprintf(stderr, "wrote %s (%s)\n", out_path, size);
 
     if (run) {
-        char cmd[PATH_MAX + 4];
+        char cmd[PATH_MAX * 2 + 256];
+        int  cmd_len = snprintf(cmd, sizeof(cmd), "'%s'", out_path);
 
-        snprintf(cmd, sizeof(cmd), "'%s'", out_path);
+        for (int i = 0; i < prog_argc && cmd_len > 0; i++) {
+            cmd_len += snprintf(cmd + cmd_len, sizeof(cmd) - cmd_len, " '%s'", prog_args[i]);
+        }
 
         struct timespec start, end;
         clock_gettime(CLOCK_MONOTONIC, &start);
