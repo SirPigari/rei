@@ -56,10 +56,14 @@ AllowShortCaseLabelsOnASingleLine: false
 BinPackArguments: false
 BinPackParameters: false
 AllowAllArgumentsOnNextLine: true
-AllowAllParametersOfDeclarationOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: false
 BreakBeforeBinaryOperators: None
 BreakBeforeTernaryOperators: true
 BreakStringLiterals: true
+
+PenaltyReturnTypeOnItsOwnLine: 1000
+BreakAfterReturnType: Automatic
+AlignAfterOpenBracket: BlockIndent
 
 SortIncludes: CaseSensitive
 IncludeBlocks: Regroup

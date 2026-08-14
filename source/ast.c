@@ -442,6 +442,9 @@ void ast_dump(Module* m) {
                 printf(") -> ");
                 print_type(d->ret_type);
                 printf("\n");
+                if (m->count > i && m->decls[i + 1]->kind != AST_EXTERN_DECL) {
+                    printf("\n");
+                }
                 break;
             case AST_FUNC_DECL:
                 printf("%s :: (", d->function_name);
@@ -480,15 +483,19 @@ void ast_dump(Module* m) {
                 printf(";\n");
                 break;
             case AST_ANNOTATION:
-                printf("#%s", d->annot_type == -1 ? "unknown" : 
-                    (d->annot_type == ANNOT_NO_MANGLE ? "no_mangle" :
-                    d->annot_type == ANNOT_PRINTF_LIKE ? "printf_like" :
-                    d->annot_type == ANNOT_SCANF_LIKE ? "scanf_like" :
-                    d->annot_type == ANNOT_STRFTIME_LIKE ? "strftime_like" :
-                    d->annot_type == ANNOT_DEPRECATED ? "deprecated" :
-                    d->annot_type == ANNOT_INLINE ? "inline" :
-                    d->annot_type == ANNOT_SENTINEL ? "sentinel" :
-                    d->annot_type == ANNOT_LINK_NAME ? "link_name" : "?"));
+                printf(
+                    "#%s",
+                    d->annot_type == -1 ? "unknown"
+                                        : (d->annot_type == ANNOT_NO_MANGLE       ? "no_mangle"
+                                           : d->annot_type == ANNOT_PRINTF_LIKE   ? "printf_like"
+                                           : d->annot_type == ANNOT_SCANF_LIKE    ? "scanf_like"
+                                           : d->annot_type == ANNOT_STRFTIME_LIKE ? "strftime_like"
+                                           : d->annot_type == ANNOT_DEPRECATED    ? "deprecated"
+                                           : d->annot_type == ANNOT_INLINE        ? "inline"
+                                           : d->annot_type == ANNOT_SENTINEL      ? "sentinel"
+                                           : d->annot_type == ANNOT_LINK_NAME     ? "link_name"
+                                                                                  : "?")
+                );
                 if (d->annot_str)
                     printf("(%s)", d->annot_str);
                 printf("\n");

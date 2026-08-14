@@ -16,6 +16,10 @@ typedef enum {
 void diag_emit(DiagLevel level, Location loc, const char* fmt, ...);
 void diag_ice(const char* file, int line, ...); /* internal compiler error */
 
+void diag_silence_start(void);
+int  diag_had_error(void);
+void diag_silence_end(void);
+
 #define ICE(...) diag_ice(__FILE__, __LINE__, __VA_ARGS__)
 
 extern int diag_error_count;

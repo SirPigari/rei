@@ -41,23 +41,25 @@ static char* read_file(const char* path) {
 }
 
 static void usage(FILE* stream, const char* argv0) {
-    fprintf(stream,
-            "Usage: %s [options] <source.rei>\n"
-            "Options:\n"
-            "  -o <file>          output file\n"
-            "  -t <target>        codegen target (default: x86_64-linux)\n"
-            "  -c                 compile only, produce .o object file (implies --lib)\n"
-            "  -S                 produce assembly file only\n"
-            "  --lib              produce .so shared library\n"
-            "  --static-lib       produce .a static library\n"
-            "  --dump-ast         print AST and stop\n"
-            "  --dump-ir          print IR and stop\n"
-            "  --dump-asm         print generated assembly\n"
-            "  --run, -r          run compiled output\n"
-            "  --no-rei-main      treat main as C main instead of rei__main\n"
-            "  --no-main          skip main function checking\n"
-            "  --help, -h         show this message\n",
-            argv0);
+    fprintf(
+        stream,
+        "Usage: %s [options] <source.rei>\n"
+        "Options:\n"
+        "  -o <file>          output file\n"
+        "  -t <target>        codegen target (default: x86_64-linux)\n"
+        "  -c                 compile only, produce .o object file (implies --lib)\n"
+        "  -S                 produce assembly file only\n"
+        "  --lib              produce .so shared library\n"
+        "  --static-lib       produce .a static library\n"
+        "  --dump-ast         print AST and stop\n"
+        "  --dump-ir          print IR and stop\n"
+        "  --dump-asm         print generated assembly\n"
+        "  --run, -r          run compiled output\n"
+        "  --no-rei-main      treat main as C main instead of rei__main\n"
+        "  --no-main          skip main function checking\n"
+        "  --help, -h         show this message\n",
+        argv0
+    );
     exit(1);
 }
 

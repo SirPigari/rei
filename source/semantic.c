@@ -13,16 +13,18 @@ static bool types_equal(Type* a, Type* b) {
         return a == b;
     if (a->kind != b->kind)
         return false;
-    if (a->int_type.is_abstract != b->int_type.is_abstract)
-        return false;
-    if (a->int_type.is_size != b->int_type.is_size)
-        return false;
     switch (a->kind) {
         case TYPE_VOID:
             return true;
         case TYPE_INT:
+            if (a->int_type.is_abstract != b->int_type.is_abstract)
+                return false;
+            if (a->int_type.is_size != b->int_type.is_size)
+                return false;
             return a->bits == b->bits && a->int_type.is_unsigned == b->int_type.is_unsigned;
         case TYPE_FLOAT:
+            if (a->int_type.is_size != b->int_type.is_size)
+                return false;
             return a->bits == b->bits;
         case TYPE_PTR:
             return a->ptr_type.is_fat == b->ptr_type.is_fat &&
@@ -177,10 +179,12 @@ static void diag_type_hint(Type* actual, Type* expected, Location arg_loc) {
     }
 
     if (is_thin_ptr_u8(actual) && is_fat_ptr_u8(expected)) {
-        diag_emit(DIAG_NOTE,
-                  arg_loc,
-                  "c\"...\" string literals have type *u8 (null-terminated C string); "
-                  "use a plain \"...\" literal to get []u8 (a fat pointer / slice)");
+        diag_emit(
+            DIAG_NOTE,
+            arg_loc,
+            "c\"...\" string literals have type *u8 (null-terminated C string); "
+            "use a plain \"...\" literal to get []u8 (a fat pointer / slice)"
+        );
         return;
     }
 
@@ -190,41 +194,49 @@ static void diag_type_hint(Type* actual, Type* expected, Location arg_loc) {
 
         if (expected_inner && expected_inner->kind == TYPE_PTR && types_equal(actual, expected_inner)) {
             char ts[64];
-            diag_emit(DIAG_NOTE,
-                      arg_loc,
-                      "you have %s but %s is required; "
-                      "consider taking the address with &x to get an extra level of indirection",
-                      type_str(actual, ts, sizeof(ts)),
-                      type_str(expected, ts, sizeof(ts)));
+            diag_emit(
+                DIAG_NOTE,
+                arg_loc,
+                "you have %s but %s is required; "
+                "consider taking the address with &x to get an extra level of indirection",
+                type_str(actual, ts, sizeof(ts)),
+                type_str(expected, ts, sizeof(ts))
+            );
             return;
         }
 
         if (actual_inner && actual_inner->kind == TYPE_PTR && types_equal(actual_inner, expected)) {
             char as[64], es[64];
-            diag_emit(DIAG_NOTE,
-                      arg_loc,
-                      "you have %s but %s is required; "
-                      "consider dereferencing with *x to remove one level of indirection",
-                      type_str(actual, as, sizeof(as)),
-                      type_str(expected, es, sizeof(es)));
+            diag_emit(
+                DIAG_NOTE,
+                arg_loc,
+                "you have %s but %s is required; "
+                "consider dereferencing with *x to remove one level of indirection",
+                type_str(actual, as, sizeof(as)),
+                type_str(expected, es, sizeof(es))
+            );
             return;
         }
 
         if (actual->ptr_type.is_fat && !expected->ptr_type.is_fat && actual_inner &&
             types_equal(actual_inner, expected_inner)) {
-            diag_emit(DIAG_NOTE,
-                      arg_loc,
-                      "fat pointer (slice) cannot coerce to thin pointer automatically; "
-                      "use &x[0] to get a pointer to the first element");
+            diag_emit(
+                DIAG_NOTE,
+                arg_loc,
+                "fat pointer (slice) cannot coerce to thin pointer automatically; "
+                "use &x[0] to get a pointer to the first element"
+            );
             return;
         }
 
         if (!actual->ptr_type.is_fat && expected->ptr_type.is_fat && actual_inner &&
             types_equal(actual_inner, expected_inner)) {
-            diag_emit(DIAG_NOTE,
-                      arg_loc,
-                      "thin pointer cannot coerce to a fat pointer (slice) automatically; "
-                      "wrap it in a slice expression or change the declaration");
+            diag_emit(
+                DIAG_NOTE,
+                arg_loc,
+                "thin pointer cannot coerce to a fat pointer (slice) automatically; "
+                "wrap it in a slice expression or change the declaration"
+            );
             return;
         }
     }
@@ -232,10 +244,12 @@ static void diag_type_hint(Type* actual, Type* expected, Location arg_loc) {
     if (expected->kind == TYPE_PTR && !expected->ptr_type.is_fat && actual->kind != TYPE_PTR) {
         char es[64];
         if (expected->ptr_type.elem_type && types_equal(actual, expected->ptr_type.elem_type)) {
-            diag_emit(DIAG_NOTE,
-                      arg_loc,
-                      "expected a pointer %s; if you have a value, take its address with &x",
-                      type_str(expected, es, sizeof(es)));
+            diag_emit(
+                DIAG_NOTE,
+                arg_loc,
+                "expected a pointer %s; if you have a value, take its address with &x",
+                type_str(expected, es, sizeof(es))
+            );
             return;
         }
     }
@@ -243,11 +257,13 @@ static void diag_type_hint(Type* actual, Type* expected, Location arg_loc) {
     if (actual->kind == TYPE_PTR && !actual->ptr_type.is_fat && expected->kind != TYPE_PTR) {
         char as[64];
         if (actual->ptr_type.elem_type && types_equal(actual->ptr_type.elem_type, expected)) {
-            diag_emit(DIAG_NOTE,
-                      arg_loc,
-                      "you have a pointer %s but a value is expected; "
-                      "dereference it with *x",
-                      type_str(actual, as, sizeof(as)));
+            diag_emit(
+                DIAG_NOTE,
+                arg_loc,
+                "you have a pointer %s but a value is expected; "
+                "dereference it with *x",
+                type_str(actual, as, sizeof(as))
+            );
             return;
         }
     }
@@ -265,6 +281,254 @@ static bool types_assignable(Type* actual, Type* expected) {
     }
 
     return false;
+}
+
+static bool type_matches_printf_spec(Type* t, char spec, char length_mod) {
+    if (!t)
+        return false;
+
+    switch (spec) {
+        case 'd':
+        case 'i':
+            if (t->kind != TYPE_INT)
+                return false;
+            if (t->int_type.is_unsigned)
+                return false;
+            if (t->int_type.is_abstract)
+                return true;
+            switch (length_mod) {
+                case 'h':
+                    return t->bits == 16;       /* short */
+                case 'l':
+                    return t->bits == 64;       /* long */
+                case 'z':
+                    return t->int_type.is_size; /* ssize_t / isize */
+                default:
+                    return t->bits == 32;       /* int */
+            }
+            break;
+
+        case 'u':
+        case 'o':
+        case 'x':
+        case 'X':
+            if (t->kind != TYPE_INT)
+                return false;
+            if (t->int_type.is_abstract)
+                return true;
+            if (!t->int_type.is_unsigned)
+                return false;
+            switch (length_mod) {
+                case 'h':
+                    return t->bits == 16;       /* unsigned short */
+                case 'l':
+                    return t->bits == 64;       /* unsigned long */
+                case 'z':
+                    return t->int_type.is_size; /* size_t / usize */
+                default:
+                    return t->bits == 32;       /* unsigned int */
+            }
+            break;
+
+        case 'c':
+            return t->kind == TYPE_INT && !t->int_type.is_unsigned && (t->bits == 32 || t->bits == 8);
+
+        case 'f':
+        case 'F':
+        case 'e':
+        case 'E':
+        case 'g':
+        case 'G':
+            if (t->kind != TYPE_FLOAT)
+                return false;
+            switch (length_mod) {
+                case 'l':
+                    return t->bits == 64; /* double */
+                case 'L':
+                    return t->bits == 80; /* long double */
+                default:
+                    return t->bits == 32; /* float */
+            }
+            break;
+
+        case 's':
+            return is_thin_ptr_u8(t);
+
+        case 'p':
+            return t->kind == TYPE_PTR;
+
+        default:
+            return false;
+    }
+    return false;
+}
+
+static bool check_printf_format(
+    const char* fmt,
+    size_t      fmt_len,
+    AstNode**   variadic_args,
+    int         variadic_count,
+    Location    call_loc
+) {
+    int arg_idx = 0;
+    for (size_t i = 0; i < fmt_len; i++) {
+        if (fmt[i] == '%' && i + 1 < fmt_len) {
+            i++;
+            if (fmt[i] == '%') {
+                continue;
+            }
+
+            while (i < fmt_len && (fmt[i] == '-' || fmt[i] == '+' || fmt[i] == ' ' || fmt[i] == '#' || fmt[i] == '0')) {
+                i++;
+            }
+
+            if (i < fmt_len && fmt[i] == '*') {
+                if (arg_idx >= variadic_count) {
+                    diag_emit(
+                        DIAG_ERROR, call_loc, "printf format string expects more arguments than provided (width)"
+                    );
+                    return false;
+                }
+                Type* width_type = variadic_args[arg_idx]->type;
+                if (width_type->kind != TYPE_INT || width_type->int_type.is_unsigned || width_type->bits != 32) {
+                    char ts[64];
+                    diag_emit(
+                        DIAG_ERROR,
+                        variadic_args[arg_idx]->loc,
+                        "printf width (*) must be int (i32), got %s",
+                        type_str(width_type, ts, sizeof(ts))
+                    );
+                    return false;
+                }
+                arg_idx++;
+                i++;
+            } else {
+                while (i < fmt_len && (fmt[i] >= '0' && fmt[i] <= '9')) {
+                    i++;
+                }
+            }
+
+            if (i < fmt_len && fmt[i] == '.') {
+                i++;
+                if (i < fmt_len && fmt[i] == '*') {
+                    if (arg_idx >= variadic_count) {
+                        diag_emit(
+                            DIAG_ERROR,
+                            call_loc,
+                            "printf format string expects more arguments than provided (precision)"
+                        );
+                        return false;
+                    }
+                    Type* prec_type = variadic_args[arg_idx]->type;
+                    if (prec_type->kind != TYPE_INT || prec_type->int_type.is_unsigned || prec_type->bits != 32) {
+                        char ts[64];
+                        diag_emit(
+                            DIAG_ERROR,
+                            variadic_args[arg_idx]->loc,
+                            "printf precision (.*) must be int (i32), got %s",
+                            type_str(prec_type, ts, sizeof(ts))
+                        );
+                        return false;
+                    }
+                    arg_idx++;
+                    i++;
+                } else {
+                    while (i < fmt_len && (fmt[i] >= '0' && fmt[i] <= '9')) {
+                        i++;
+                    }
+                }
+            }
+
+            if (i >= fmt_len)
+                break;
+
+            char length_mod = '\0';
+            if (fmt[i] == 'h' || fmt[i] == 'l' || fmt[i] == 'L' || fmt[i] == 'z' || fmt[i] == 'j' || fmt[i] == 't') {
+                length_mod = fmt[i];
+                i++;
+            }
+
+            if (i >= fmt_len)
+                break;
+
+            char spec = fmt[i];
+
+            if (spec == 'n') {
+                continue;
+            }
+
+            if (arg_idx >= variadic_count) {
+                diag_emit(DIAG_ERROR, call_loc, "printf format string expects more arguments than provided");
+                return false;
+            }
+
+            Type* arg_type = variadic_args[arg_idx]->type;
+            if (!type_matches_printf_spec(arg_type, spec, length_mod)) {
+                char        ts[64];
+                const char* expected = "unknown";
+                switch (spec) {
+                    case 'd':
+                    case 'i':
+                        expected = length_mod == 'h'   ? "i16"
+                                   : length_mod == 'l' ? "i64"
+                                   : length_mod == 'z' ? "isize"
+                                                       : "i32";
+                        break;
+                    case 'u':
+                    case 'o':
+                    case 'x':
+                    case 'X':
+                        expected = length_mod == 'h'   ? "u16"
+                                   : length_mod == 'l' ? "u64"
+                                   : length_mod == 'z' ? "usize"
+                                                       : "u32";
+                        break;
+                    case 'c':
+                        expected = "i32 (character)";
+                        break;
+                    case 'f':
+                    case 'e':
+                    case 'g':
+                        expected = length_mod == 'l' ? "f64" : length_mod == 'L' ? "f80" : "f32";
+                        break;
+                    case 's':
+                        expected = "*u8 (C string)";
+                        break;
+                    case 'p':
+                        expected = "pointer";
+                        break;
+                }
+                if (length_mod) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        variadic_args[arg_idx]->loc,
+                        "printf argument mismatch: format specifier '%%%c%c' expects %s, got %s",
+                        length_mod,
+                        spec,
+                        expected,
+                        type_str(arg_type, ts, sizeof(ts))
+                    );
+                } else {
+                    diag_emit(
+                        DIAG_ERROR,
+                        variadic_args[arg_idx]->loc,
+                        "printf argument mismatch: format specifier '%%%c' expects %s, got %s",
+                        spec,
+                        expected,
+                        type_str(arg_type, ts, sizeof(ts))
+                    );
+                }
+                return false;
+            }
+            arg_idx++;
+        }
+    }
+
+    if (arg_idx < variadic_count) {
+        diag_emit(DIAG_WARN, call_loc, "printf format string uses fewer arguments than provided");
+    }
+
+    return true;
 }
 
 static Type _error_type = {.kind = TYPE_VOID};
@@ -406,7 +670,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 if (flags & STR_PREFIX_C)
                     e->type = type_ptr(u8, false, false); /* *u8  */
                 else if (flags & STR_PREFIX_B)
-                    e->type = type_array(u8, 0);   /* [u8] */
+                    e->type = type_array(u8, 0);          /* [u8] */
                 else
                     e->type = type_ptr(u8, true, false);  /* []u8 */
             }
@@ -428,10 +692,12 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 else if (hint && hint->kind == TYPE_PTR)
                     elem = hint->ptr_type.elem_type;
                 if (!elem) {
-                    diag_emit(DIAG_ERROR,
-                              e->loc,
-                              "cannot infer type of empty array literal; "
-                              "annotate the variable");
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->loc,
+                        "cannot infer type of empty array literal; "
+                        "annotate the variable"
+                    );
                     elem = type_void();
                 }
                 e->type = type_array(elem, 0);
@@ -451,12 +717,14 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 Type* et = check_expr_hint(e->elements[i], sc, elem_type);
                 if (!types_equal(elem_type, et)) {
                     char es[64], fs[64];
-                    diag_emit(DIAG_ERROR,
-                              e->elements[i]->loc,
-                              "array literal element %zu has type %s, expected %s",
-                              i,
-                              type_str(et, fs, sizeof(fs)),
-                              type_str(elem_type, es, sizeof(es)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->elements[i]->loc,
+                        "array literal element %zu has type %s, expected %s",
+                        i,
+                        type_str(et, fs, sizeof(fs)),
+                        type_str(elem_type, es, sizeof(es))
+                    );
                 }
             }
             e->type = type_array(elem_type, e->element_count);
@@ -476,7 +744,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     e->type = ERROR_TYPE;
                 }
             } else {
-                e->type = sym->type;
+                e->type = resolve_type(sym->type, sc);
             }
             return e->type;
         }
@@ -502,20 +770,24 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
             if (variadic_index == -1) {
                 if (e->arg_count != fn->param_count)
-                    diag_emit(DIAG_ERROR,
-                              e->loc,
-                              "'%s' expects %d arg(s), got %d",
-                              fn->function_name,
-                              fn->param_count,
-                              e->arg_count);
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->loc,
+                        "'%s' expects %d arg(s), got %d",
+                        fn->function_name,
+                        fn->param_count,
+                        e->arg_count
+                    );
             } else {
                 if (e->arg_count < variadic_index)
-                    diag_emit(DIAG_ERROR,
-                              e->loc,
-                              "'%s' expects at least %d arg(s), got %d",
-                              fn->function_name,
-                              variadic_index,
-                              e->arg_count);
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->loc,
+                        "'%s' expects at least %d arg(s), got %d",
+                        fn->function_name,
+                        variadic_index,
+                        e->arg_count
+                    );
             }
 
             for (int i = 0; i < e->arg_count; i++) {
@@ -525,13 +797,15 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     Type* pt         = fn->params[i].type;
                     if (!types_assignable(at, pt)) {
                         char as[64], ps[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->args[i]->loc,
-                                  "argument %d of '%s': expected %s, got %s",
-                                  i + 1,
-                                  fn->function_name,
-                                  type_str(pt, ps, sizeof(ps)),
-                                  type_str(at, as, sizeof(as)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->args[i]->loc,
+                            "argument %d of '%s': expected %s, got %s",
+                            i + 1,
+                            fn->function_name,
+                            type_str(pt, ps, sizeof(ps)),
+                            type_str(at, as, sizeof(as))
+                        );
                         diag_type_hint(at, pt, e->args[i]->loc);
                     }
                 } else if (variadic_index != -1 && i >= variadic_index) {
@@ -541,13 +815,15 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                         Type* at        = check_expr_hint(e->args[i], sc, elem_type);
                         if (!types_assignable(at, elem_type)) {
                             char as[64], es[64];
-                            diag_emit(DIAG_ERROR,
-                                      e->args[i]->loc,
-                                      "argument %d of '%s': expected %s, got %s",
-                                      i + 1,
-                                      fn->function_name,
-                                      type_str(elem_type, es, sizeof(es)),
-                                      type_str(at, as, sizeof(as)));
+                            diag_emit(
+                                DIAG_ERROR,
+                                e->args[i]->loc,
+                                "argument %d of '%s': expected %s, got %s",
+                                i + 1,
+                                fn->function_name,
+                                type_str(elem_type, es, sizeof(es)),
+                                type_str(at, as, sizeof(as))
+                            );
                             diag_type_hint(at, elem_type, e->args[i]->loc);
                         }
                     } else {
@@ -555,7 +831,25 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     }
                 }
             }
-            e->type = fn->ret_type;
+
+            if (fn->is_printf_like && fn->printf_fmt_param_idx >= 0 && fn->printf_fmt_param_idx < e->arg_count) {
+                AstNode* fmt_arg = e->args[fn->printf_fmt_param_idx];
+                if (fmt_arg->kind == AST_STRING_LIT) {
+                    int variadic_start = fn->printf_fmt_param_idx;
+                    for (int i = 0; i < fn->param_count; i++) {
+                        if (fn->params[i].is_variadic) {
+                            variadic_start = i;
+                            break;
+                        }
+                    }
+                    int variadic_arg_count = e->arg_count - variadic_start;
+                    check_printf_format(
+                        fmt_arg->str, fmt_arg->len, &e->args[variadic_start], variadic_arg_count, e->loc
+                    );
+                }
+            }
+
+            e->type = resolve_type(fn->ret_type, sc);
             return e->type;
         }
 
@@ -581,19 +875,23 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     }
                     if (is_pointer(lt) && !is_integer(rt)) {
                         char s[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->rhs->loc,
-                                  "pointer arithmetic requires integer offset, got %s",
-                                  type_str(rt, s, sizeof(s)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->rhs->loc,
+                            "pointer arithmetic requires integer offset, got %s",
+                            type_str(rt, s, sizeof(s))
+                        );
                         e->type = lt;
                         return e->type;
                     }
                     if (is_pointer(rt) && !is_integer(lt)) {
                         char s[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->lhs->loc,
-                                  "pointer arithmetic requires integer offset, got %s",
-                                  type_str(lt, s, sizeof(s)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->lhs->loc,
+                            "pointer arithmetic requires integer offset, got %s",
+                            type_str(lt, s, sizeof(s))
+                        );
                         e->type = rt;
                         return e->type;
                     }
@@ -606,10 +904,12 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     }
                     if (is_pointer(lt) && !is_integer(rt)) {
                         char s[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->rhs->loc,
-                                  "pointer arithmetic requires integer offset, got %s",
-                                  type_str(rt, s, sizeof(s)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->rhs->loc,
+                            "pointer arithmetic requires integer offset, got %s",
+                            type_str(rt, s, sizeof(s))
+                        );
                         e->type = lt;
                         return e->type;
                     }
@@ -622,16 +922,18 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     return e->type;
                 } else {
                     char ls[64], rs[64];
-                    diag_emit(DIAG_ERROR,
-                              e->loc,
-                              "binary operator '%s' not supported on pointer types (%s, %s)",
-                              e->op == OP_MUL   ? "*"
-                              : e->op == OP_DIV ? "/"
-                              : e->op == OP_MOD ? "%"
-                              : e->op == OP_POW ? "**"
-                                                : "op",
-                              type_str(lt, ls, sizeof(ls)),
-                              type_str(rt, rs, sizeof(rs)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->loc,
+                        "binary operator '%s' not supported on pointer types (%s, %s)",
+                        e->op == OP_MUL   ? "*"
+                        : e->op == OP_DIV ? "/"
+                        : e->op == OP_MOD ? "%"
+                        : e->op == OP_POW ? "**"
+                                          : "op",
+                        type_str(lt, ls, sizeof(ls)),
+                        type_str(rt, rs, sizeof(rs))
+                    );
                     e->type = lt ? lt : rt;
                     return e->type;
                 }
@@ -639,8 +941,9 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
             if (lt && rt && !types_equal(lt, rt) && !is_error_type(lt) && !is_error_type(rt) && !is_abstract_int(lt) &&
                 !is_abstract_int(rt)) {
-                bool is_comparison = (e->op == OP_EQ || e->op == OP_NEQ || e->op == OP_LESS || e->op == OP_LESSEQ ||
-                                      e->op == OP_MORE || e->op == OP_MOREEQ);
+                bool is_comparison =
+                    (e->op == OP_EQ || e->op == OP_NEQ || e->op == OP_LESS || e->op == OP_LESSEQ || e->op == OP_MORE ||
+                     e->op == OP_MOREEQ);
 
                 if (is_comparison && types_compatible_numeric(lt, rt)) {
                     e->type = lt;
@@ -661,11 +964,13 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 }
 
                 char ls[64], rs[64];
-                diag_emit(DIAG_ERROR,
-                          e->loc,
-                          "type mismatch: %s and %s",
-                          type_str(lt, ls, sizeof(ls)),
-                          type_str(rt, rs, sizeof(rs)));
+                diag_emit(
+                    DIAG_ERROR,
+                    e->loc,
+                    "type mismatch: %s and %s",
+                    type_str(lt, ls, sizeof(ls)),
+                    type_str(rt, rs, sizeof(rs))
+                );
             }
 
             if (e->op == OP_POW) {
@@ -682,17 +987,21 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
             if (is_bitwise) {
                 if (!is_integer(lt)) {
                     char s[64];
-                    diag_emit(DIAG_ERROR,
-                              e->lhs->loc,
-                              "bitwise operator requires integer operand, got %s",
-                              type_str(lt, s, sizeof(s)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->lhs->loc,
+                        "bitwise operator requires integer operand, got %s",
+                        type_str(lt, s, sizeof(s))
+                    );
                 }
                 if (!is_integer(rt)) {
                     char s[64];
-                    diag_emit(DIAG_ERROR,
-                              e->rhs->loc,
-                              "bitwise operator requires integer operand, got %s",
-                              type_str(rt, s, sizeof(s)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->rhs->loc,
+                        "bitwise operator requires integer operand, got %s",
+                        type_str(rt, s, sizeof(s))
+                    );
                 }
             }
 
@@ -700,22 +1009,27 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
             if (is_logical) {
                 if (!is_numeric(lt)) {
                     char s[64];
-                    diag_emit(DIAG_ERROR,
-                              e->lhs->loc,
-                              "logical operator requires numeric operand, got %s",
-                              type_str(lt, s, sizeof(s)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->lhs->loc,
+                        "logical operator requires numeric operand, got %s",
+                        type_str(lt, s, sizeof(s))
+                    );
                 }
                 if (!is_numeric(rt)) {
                     char s[64];
-                    diag_emit(DIAG_ERROR,
-                              e->rhs->loc,
-                              "logical operator requires numeric operand, got %s",
-                              type_str(rt, s, sizeof(s)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->rhs->loc,
+                        "logical operator requires numeric operand, got %s",
+                        type_str(rt, s, sizeof(s))
+                    );
                 }
             }
 
-            bool is_cmp = (e->op == OP_EQ || e->op == OP_NEQ || e->op == OP_LESS || e->op == OP_MORE ||
-                           e->op == OP_LESSEQ || e->op == OP_MOREEQ);
+            bool is_cmp =
+                (e->op == OP_EQ || e->op == OP_NEQ || e->op == OP_LESS || e->op == OP_MORE || e->op == OP_LESSEQ ||
+                 e->op == OP_MOREEQ);
 
             if (is_cmp) {
                 e->type = type_number(TYPE_INT, 32, 0);
@@ -741,16 +1055,19 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     } else if (!t || t->kind != TYPE_PTR) {
                         char s[64];
                         diag_emit(
-                            DIAG_ERROR, e->loc, "cannot dereference non-pointer type %s", type_str(t, s, sizeof(s)));
+                            DIAG_ERROR, e->loc, "cannot dereference non-pointer type %s", type_str(t, s, sizeof(s))
+                        );
                         e->type = ERROR_TYPE;
                     } else if (t->ptr_type.is_fat) {
-                        diag_emit(DIAG_ERROR,
-                                  e->loc,
-                                  "cannot dereference fat pointer (slice) directly; "
-                                  "index it instead");
-                        e->type = t->ptr_type.elem_type;
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->loc,
+                            "cannot dereference fat pointer (slice) directly; "
+                            "index it instead"
+                        );
+                        e->type = resolve_type(t->ptr_type.elem_type, sc);
                     } else {
-                        e->type = t->ptr_type.elem_type;
+                        e->type = resolve_type(t->ptr_type.elem_type, sc);
                     }
                     break;
 
@@ -767,10 +1084,12 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 case UOP_NOT:
                     if (!is_numeric(t)) {
                         char s[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->loc,
-                                  "logical not requires numeric operand, got %s",
-                                  type_str(t, s, sizeof(s)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->loc,
+                            "logical not requires numeric operand, got %s",
+                            type_str(t, s, sizeof(s))
+                        );
                     }
                     e->type = type_number(TYPE_INT, 64, 0);
                     break;
@@ -778,10 +1097,12 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 case UOP_BITNOT:
                     if (!is_integer(t)) {
                         char s[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->loc,
-                                  "bitwise not requires integer operand, got %s",
-                                  type_str(t, s, sizeof(s)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->loc,
+                            "bitwise not requires integer operand, got %s",
+                            type_str(t, s, sizeof(s))
+                        );
                     }
                     e->type = t;
                     break;
@@ -790,11 +1111,13 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 case UOP_POS:
                     if (!is_numeric(t)) {
                         char s[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->loc,
-                                  "unary %s requires numeric operand, got %s",
-                                  e->uop == UOP_NEG ? "-" : "+",
-                                  type_str(t, s, sizeof(s)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->loc,
+                            "unary %s requires numeric operand, got %s",
+                            e->uop == UOP_NEG ? "-" : "+",
+                            type_str(t, s, sizeof(s))
+                        );
                     }
                     e->type = t;
                     break;
@@ -805,10 +1128,12 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 case UOP_POSTDEC:
                     if (!is_integer(t)) {
                         char s[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->loc,
-                                  "increment/decrement requires integer operand, got %s",
-                                  type_str(t, s, sizeof(s)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->loc,
+                            "increment/decrement requires integer operand, got %s",
+                            type_str(t, s, sizeof(s))
+                        );
                     }
                     e->type = t;
                     break;
@@ -822,22 +1147,22 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
             if (!is_integer(index_type)) {
                 char s[64];
-                diag_emit(DIAG_ERROR,
-                          e->index->loc,
-                          "array index must be integer, got %s",
-                          type_str(index_type, s, sizeof(s)));
+                diag_emit(
+                    DIAG_ERROR, e->index->loc, "array index must be integer, got %s", type_str(index_type, s, sizeof(s))
+                );
             }
 
             if (is_error_type(array_type)) {
                 e->type = ERROR_TYPE;
             } else if (array_type && array_type->kind == TYPE_ARRAY) {
-                e->type = array_type->array_type.elem_type;
+                e->type = resolve_type(array_type->array_type.elem_type, sc);
             } else if (array_type && array_type->kind == TYPE_PTR) {
-                e->type = array_type->ptr_type.elem_type;
+                e->type = resolve_type(array_type->ptr_type.elem_type, sc);
             } else {
                 char s[64];
                 diag_emit(
-                    DIAG_ERROR, e->loc, "cannot index non-array/pointer type %s", type_str(array_type, s, sizeof(s)));
+                    DIAG_ERROR, e->loc, "cannot index non-array/pointer type %s", type_str(array_type, s, sizeof(s))
+                );
                 e->type = ERROR_TYPE;
             }
             return e->type;
@@ -858,11 +1183,13 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     e->type = type_abstract_int();
                     return e->type;
                 } else {
-                    diag_emit(DIAG_ERROR,
-                              e->loc,
-                              "%s has no member '%s'",
-                              value_type->kind == TYPE_PTR ? "fat pointer" : "array",
-                              e->member_name);
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->loc,
+                        "%s has no member '%s'",
+                        value_type->kind == TYPE_PTR ? "fat pointer" : "array",
+                        e->member_name
+                    );
                     e->type = ERROR_TYPE;
                     return e->type;
                 }
@@ -870,7 +1197,8 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
             char s[64];
             diag_emit(
-                DIAG_ERROR, e->loc, "member access not supported for type %s", type_str(value_type, s, sizeof(s)));
+                DIAG_ERROR, e->loc, "member access not supported for type %s", type_str(value_type, s, sizeof(s))
+            );
             e->type = ERROR_TYPE;
             return e->type;
         }
@@ -881,7 +1209,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
             if (e->cast_type == NULL) {
                 e->type = hint;
             } else {
-                e->type = e->cast_type;
+                e->type = resolve_type(e->cast_type, sc);
             }
             return e->type;
         }
@@ -894,11 +1222,13 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 if (!types_equal(start_type, end_type)) {
                     if (!is_abstract_int(start_type) && !is_abstract_int(end_type)) {
                         char st[64], et[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->loc,
-                                  "range bounds must have same type, got %s and %s",
-                                  type_str(start_type, st, sizeof(st)),
-                                  type_str(end_type, et, sizeof(et)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->loc,
+                            "range bounds must have same type, got %s and %s",
+                            type_str(start_type, st, sizeof(st)),
+                            type_str(end_type, et, sizeof(et))
+                        );
                     }
                 }
             }
@@ -912,12 +1242,14 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
             if (!e->range_step) {
                 if (e->range_start->kind == AST_INT_LIT && e->range_end->kind == AST_INT_LIT) {
                     if (e->range_start->ival > e->range_end->ival) {
-                        diag_emit(DIAG_WARN,
-                                  e->loc,
-                                  "range %lld..%lld:1 does not iterate (start > end). Use negative step like -1 "
-                                  "(start..end:step) to iterate backwards.",
-                                  e->range_start->ival,
-                                  e->range_end->ival);
+                        diag_emit(
+                            DIAG_WARN,
+                            e->loc,
+                            "range %lld..%lld:1 does not iterate (start > end). Use negative step like -1 "
+                            "(start..end:step) to iterate backwards.",
+                            e->range_start->ival,
+                            e->range_end->ival
+                        );
                     }
                 }
             }
@@ -927,27 +1259,35 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 if (step_type) {
                     if (is_float_range && step_type->kind != TYPE_FLOAT) {
                         char st[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->range_step->loc,
-                                  "float range step must be float, got %s",
-                                  type_str(step_type, st, sizeof(st)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->range_step->loc,
+                            "float range step must be float, got %s",
+                            type_str(step_type, st, sizeof(st))
+                        );
                     } else if (!is_float_range && step_type->kind != TYPE_INT) {
                         char st[64];
-                        diag_emit(DIAG_ERROR,
-                                  e->range_step->loc,
-                                  "integer range step must be integer, got %s",
-                                  type_str(step_type, st, sizeof(st)));
-                    } else if (e->range_start->kind == AST_INT_LIT && e->range_end->kind == AST_INT_LIT &&
-                               e->range_step->kind == AST_INT_LIT) {
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->range_step->loc,
+                            "integer range step must be integer, got %s",
+                            type_str(step_type, st, sizeof(st))
+                        );
+                    } else if (
+                        e->range_start->kind == AST_INT_LIT && e->range_end->kind == AST_INT_LIT &&
+                        e->range_step->kind == AST_INT_LIT
+                    ) {
                         if (e->range_start->ival > e->range_end->ival && e->range_step->ival > 0) {
-                            diag_emit(DIAG_WARN,
-                                      e->loc,
-                                      "range %lld..%lld:%lld does not iterate (start > end with positive step). Use "
-                                      "negative step like -%lld.",
-                                      e->range_start->ival,
-                                      e->range_end->ival,
-                                      e->range_step->ival,
-                                      e->range_step->ival);
+                            diag_emit(
+                                DIAG_WARN,
+                                e->loc,
+                                "range %lld..%lld:%lld does not iterate (start > end with positive step). Use "
+                                "negative step like -%lld.",
+                                e->range_start->ival,
+                                e->range_end->ival,
+                                e->range_step->ival,
+                                e->range_step->ival
+                            );
                         }
                     }
                 }
@@ -987,11 +1327,13 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                     diag_emit(DIAG_WARN, s->loc, "returning value from void function");
                 } else if (ret && !types_assignable(vt, ret)) {
                     char vs[64], rs[64];
-                    diag_emit(DIAG_ERROR,
-                              s->loc,
-                              "return type mismatch: expected %s, got %s",
-                              type_str(ret, rs, sizeof(rs)),
-                              type_str(vt, vs, sizeof(vs)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->loc,
+                        "return type mismatch: expected %s, got %s",
+                        type_str(ret, rs, sizeof(rs)),
+                        type_str(vt, vs, sizeof(vs))
+                    );
                     diag_type_hint(vt, ret, s->ret_val->loc);
                 }
             } else if (ret && ret->kind != TYPE_VOID) {
@@ -1011,10 +1353,12 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
             Type* ct = check_expr(s->if_cond, sc);
             if (ct && ct->kind == TYPE_PTR) {
                 char ts[64];
-                diag_emit(DIAG_ERROR,
-                          s->if_cond->loc,
-                          "condition cannot be a pointer type (%s); dereference first",
-                          type_str(ct, ts, sizeof(ts)));
+                diag_emit(
+                    DIAG_ERROR,
+                    s->if_cond->loc,
+                    "condition cannot be a pointer type (%s); dereference first",
+                    type_str(ct, ts, sizeof(ts))
+                );
             }
             check_stmt(s->then_branch, sc, fn);
             if (s->else_branch)
@@ -1026,10 +1370,12 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
             Type* ct = check_expr(s->while_cond, sc);
             if (ct && ct->kind == TYPE_PTR) {
                 char ts[64];
-                diag_emit(DIAG_ERROR,
-                          s->while_cond->loc,
-                          "condition cannot be a pointer type (%s); dereference first",
-                          type_str(ct, ts, sizeof(ts)));
+                diag_emit(
+                    DIAG_ERROR,
+                    s->while_cond->loc,
+                    "condition cannot be a pointer type (%s); dereference first",
+                    type_str(ct, ts, sizeof(ts))
+                );
             }
             check_stmt(s->while_body, sc, fn);
             break;
@@ -1045,10 +1391,12 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
             } else if (iter_type->kind == TYPE_INT || iter_type->kind == TYPE_FLOAT) {
             } else {
                 char ts[64];
-                diag_emit(DIAG_ERROR,
-                          s->for_iterable->loc,
-                          "can only iterate over arrays, fat pointers, or ranges, got %s",
-                          type_str(iter_type, ts, sizeof(ts)));
+                diag_emit(
+                    DIAG_ERROR,
+                    s->for_iterable->loc,
+                    "can only iterate over arrays, fat pointers, or ranges, got %s",
+                    type_str(iter_type, ts, sizeof(ts))
+                );
             }
 
             if (s->for_val && s->for_val->kind == AST_IDENT) {
@@ -1056,11 +1404,13 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
 
                 Type* elem_type = NULL;
                 if (iter_type && iter_type->kind == TYPE_ARRAY) {
-                    elem_type = iter_type->array_type.elem_type;
+                    elem_type = resolve_type(iter_type->array_type.elem_type, sc);
                 } else if (iter_type && iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat) {
-                    elem_type = iter_type->ptr_type.elem_type;
-                } else if (s->for_iterable->kind == AST_RANGE && iter_type &&
-                           (iter_type->kind == TYPE_INT || iter_type->kind == TYPE_FLOAT)) {
+                    elem_type = resolve_type(iter_type->ptr_type.elem_type, sc);
+                } else if (
+                    s->for_iterable->kind == AST_RANGE && iter_type &&
+                    (iter_type->kind == TYPE_INT || iter_type->kind == TYPE_FLOAT)
+                ) {
                     elem_type = iter_type;
                 } else {
                     elem_type = type_number(TYPE_INT, 64, false);
@@ -1099,13 +1449,15 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                     if (!types_compatible_with_decay(it, s->var_type) && !types_assignable(it, s->var_type) &&
                         !is_error_type(it)) {
                         char is[64], vs[64];
-                        diag_emit(DIAG_ERROR,
-                                  s->init->loc,
-                                  "initializer type mismatch: variable '%s' has type %s, "
-                                  "initializer has type %s",
-                                  s->var_name,
-                                  type_str(s->var_type, vs, sizeof(vs)),
-                                  type_str(it, is, sizeof(is)));
+                        diag_emit(
+                            DIAG_ERROR,
+                            s->init->loc,
+                            "initializer type mismatch: variable '%s' has type %s, "
+                            "initializer has type %s",
+                            s->var_name,
+                            type_str(s->var_type, vs, sizeof(vs)),
+                            type_str(it, is, sizeof(is))
+                        );
                         diag_type_hint(it, s->var_type, s->init->loc);
                         scope_type = it;
                     }
@@ -1149,13 +1501,15 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
 
                 if (it && !types_equal(it, s->var_type)) {
                     char is[64], vs[64];
-                    diag_emit(DIAG_ERROR,
-                              s->init->loc,
-                              "initializer type mismatch: constant '%s' has type %s, "
-                              "initializer has type %s",
-                              s->var_name,
-                              type_str(s->var_type, vs, sizeof(vs)),
-                              type_str(it, is, sizeof(is)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->init->loc,
+                        "initializer type mismatch: constant '%s' has type %s, "
+                        "initializer has type %s",
+                        s->var_name,
+                        type_str(s->var_type, vs, sizeof(vs)),
+                        type_str(it, is, sizeof(is))
+                    );
                     diag_type_hint(it, s->var_type, s->init->loc);
                     scope_type = it;
                 }
@@ -1182,20 +1536,24 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                 Type* vt = check_expr_hint(s->assign_value, sc, sym->type);
                 if (!types_equal(sym->type, vt) && !types_assignable(vt, sym->type)) {
                     char ss[64], vs[64];
-                    diag_emit(DIAG_ERROR,
-                              s->loc,
-                              "assignment type mismatch: '%s' has type %s, value has type %s",
-                              s->assign_target->ident,
-                              type_str(sym->type, ss, sizeof(ss)),
-                              type_str(vt, vs, sizeof(vs)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->loc,
+                        "assignment type mismatch: '%s' has type %s, value has type %s",
+                        s->assign_target->ident,
+                        type_str(sym->type, ss, sizeof(ss)),
+                        type_str(vt, vs, sizeof(vs))
+                    );
                     diag_type_hint(vt, sym->type, s->assign_value->loc);
                 }
                 if (s->assign_op != ASSIGN_EQ && !is_numeric(sym->type)) {
                     char ts[64];
-                    diag_emit(DIAG_ERROR,
-                              s->loc,
-                              "compound assignment requires numeric type, got %s",
-                              type_str(sym->type, ts, sizeof(ts)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->loc,
+                        "compound assignment requires numeric type, got %s",
+                        type_str(sym->type, ts, sizeof(ts))
+                    );
                 }
                 s->type = sym->type;
             } else if (s->assign_target->kind == AST_INDEX) {
@@ -1205,45 +1563,53 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
 
                 if (!is_integer(index_type)) {
                     char s_str[64];
-                    diag_emit(DIAG_ERROR,
-                              s->assign_target->index->loc,
-                              "array index must be integer, got %s",
-                              type_str(index_type, s_str, sizeof(s_str)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->assign_target->index->loc,
+                        "array index must be integer, got %s",
+                        type_str(index_type, s_str, sizeof(s_str))
+                    );
                 }
 
                 Type* elem_type = NULL;
                 if (is_error_type(array_type)) {
                     elem_type = ERROR_TYPE;
                 } else if (array_type && array_type->kind == TYPE_ARRAY) {
-                    elem_type = array_type->array_type.elem_type;
+                    elem_type = resolve_type(array_type->array_type.elem_type, sc);
                 } else if (array_type && array_type->kind == TYPE_PTR) {
-                    elem_type = array_type->ptr_type.elem_type;
+                    elem_type = resolve_type(array_type->ptr_type.elem_type, sc);
                 } else {
                     char s_str[64];
-                    diag_emit(DIAG_ERROR,
-                              s->loc,
-                              "cannot index non-array/pointer type %s",
-                              type_str(array_type, s_str, sizeof(s_str)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->loc,
+                        "cannot index non-array/pointer type %s",
+                        type_str(array_type, s_str, sizeof(s_str))
+                    );
                     elem_type = ERROR_TYPE;
                 }
 
                 Type* vt = check_expr_hint(s->assign_value, sc, elem_type);
                 if (elem_type && !types_equal(elem_type, vt) && !types_assignable(vt, elem_type)) {
                     char et[64], vt_str[64];
-                    diag_emit(DIAG_ERROR,
-                              s->loc,
-                              "assignment type mismatch: element has type %s, value has type %s",
-                              type_str(elem_type, et, sizeof(et)),
-                              type_str(vt, vt_str, sizeof(vt_str)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->loc,
+                        "assignment type mismatch: element has type %s, value has type %s",
+                        type_str(elem_type, et, sizeof(et)),
+                        type_str(vt, vt_str, sizeof(vt_str))
+                    );
                     diag_type_hint(vt, elem_type, s->assign_value->loc);
                 }
 
                 if (s->assign_op != ASSIGN_EQ && elem_type && !is_numeric(elem_type)) {
                     char ts[64];
-                    diag_emit(DIAG_ERROR,
-                              s->loc,
-                              "compound assignment requires numeric type, got %s",
-                              type_str(elem_type, ts, sizeof(ts)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->loc,
+                        "compound assignment requires numeric type, got %s",
+                        type_str(elem_type, ts, sizeof(ts))
+                    );
                 }
                 s->type = elem_type;
             } else if (s->assign_target->kind == AST_MEMBER) {
@@ -1274,10 +1640,12 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
 
                 if (!types_assignable(vt, target_type)) {
                     char vt_str[64];
-                    diag_emit(DIAG_ERROR,
-                              s->loc,
-                              "cannot assign %s to fat pointer length (expected integer)",
-                              type_str(vt, vt_str, sizeof(vt_str)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->loc,
+                        "cannot assign %s to fat pointer length (expected integer)",
+                        type_str(vt, vt_str, sizeof(vt_str))
+                    );
                 }
 
                 if (s->assign_op != ASSIGN_EQ) {
@@ -1287,7 +1655,8 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                 s->type = target_type;
             } else {
                 diag_emit(
-                    DIAG_ERROR, s->loc, "assignment target must be a variable, array index, or fat pointer member");
+                    DIAG_ERROR, s->loc, "assignment target must be a variable, array index, or fat pointer member"
+                );
                 check_expr(s->assign_value, sc);
             }
             break;
@@ -1389,7 +1758,8 @@ static bool validate_variadic_params(AstNode* func_decl) {
     if (variadic_index != -1) {
         if (variadic_index != func_decl->param_count - 1) {
             diag_emit(
-                DIAG_ERROR, func_decl->params[variadic_index].loc, "variadic parameter must be the last parameter");
+                DIAG_ERROR, func_decl->params[variadic_index].loc, "variadic parameter must be the last parameter"
+            );
             return false;
         }
 
@@ -1397,10 +1767,12 @@ static bool validate_variadic_params(AstNode* func_decl) {
             Type* var_type = func_decl->params[variadic_index].type;
             if (!var_type || var_type->kind != TYPE_ARRAY) {
                 char ts[64];
-                diag_emit(DIAG_ERROR,
-                          func_decl->params[variadic_index].loc,
-                          "variadic parameter must have array type, got %s",
-                          type_str(var_type, ts, sizeof(ts)));
+                diag_emit(
+                    DIAG_ERROR,
+                    func_decl->params[variadic_index].loc,
+                    "variadic parameter must have array type, got %s",
+                    type_str(var_type, ts, sizeof(ts))
+                );
                 return false;
             }
         }
@@ -1451,6 +1823,128 @@ static bool validate_rei_main_signature(AstNode* func_decl) {
     } else {
         diag_emit(DIAG_ERROR, func_decl->loc, "main function can have 0, 1, or 2 arguments, got %d", param_count);
         return false;
+    }
+}
+
+static bool check_annotation(AstNode* annot, AstNode* target) {
+    if (!annot || annot->kind != AST_ANNOTATION)
+        return false;
+
+    switch (annot->annot_type) {
+        case ANNOT_PRINTF_LIKE: {
+            if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "printf_like annotation can only be applied to function or extern declarations"
+                );
+                return false;
+            }
+
+            if (annot->annot_arg_parse_failed) {
+                diag_emit(DIAG_ERROR, annot->loc, "printf_like annotation has invalid arguments");
+                return false;
+            }
+
+            if (annot->annot_expr_count != 1) {
+                diag_emit(DIAG_ERROR, annot->loc, "printf_like requires exactly one argument");
+                diag_emit(
+                    DIAG_NOTE,
+                    annot->loc,
+                    "use an identifier, string literal, or index: #printf_like(fmt), #printf_like(\"fmt\"), or "
+                    "#printf_like(0)"
+                );
+                return false;
+            }
+
+            AstNode* arg           = annot->annot_exprs[0];
+            int      fmt_param_idx = -1;
+
+            if (arg->kind == AST_IDENT) {
+                for (int i = 0; i < target->param_count; i++) {
+                    if (target->params[i].name && strcmp(target->params[i].name, arg->ident) == 0) {
+                        fmt_param_idx = i;
+                        break;
+                    }
+                }
+                if (fmt_param_idx == -1) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        arg->loc,
+                        "printf_like: parameter '%s' not found in function '%s'",
+                        arg->ident,
+                        target->function_name
+                    );
+                    return false;
+                }
+            } else if (arg->kind == AST_STRING_LIT) {
+                for (int i = 0; i < target->param_count; i++) {
+                    if (target->params[i].name && arg->len > 0 &&
+                        strncmp(target->params[i].name, arg->str, arg->len) == 0 &&
+                        target->params[i].name[arg->len] == '\0') {
+                        fmt_param_idx = i;
+                        break;
+                    }
+                }
+                if (fmt_param_idx == -1) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        arg->loc,
+                        "printf_like: parameter '%.*s' not found in function '%s'",
+                        (int)arg->len,
+                        arg->str,
+                        target->function_name
+                    );
+                    return false;
+                }
+            } else if (arg->kind == AST_INT_LIT) {
+                fmt_param_idx = (int)arg->ival;
+                if (fmt_param_idx < 0 || fmt_param_idx >= target->param_count) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        arg->loc,
+                        "printf_like: parameter index %d out of range (function has %d parameters)",
+                        fmt_param_idx,
+                        target->param_count
+                    );
+                    return false;
+                }
+            } else {
+                diag_emit(
+                    DIAG_ERROR, arg->loc, "printf_like argument must be an identifier, string literal, or integer index"
+                );
+                return false;
+            }
+
+            Type* fmt_param_type = target->params[fmt_param_idx].type;
+            if (!is_thin_ptr_u8(fmt_param_type) && !is_fat_ptr_u8(fmt_param_type)) {
+                char ts[64];
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "printf_like format parameter must be *u8 or []u8, got %s",
+                    type_str(fmt_param_type, ts, sizeof(ts))
+                );
+                return false;
+            }
+
+            Param* last_param = &target->params[target->param_count - 1];
+            if (!last_param->is_variadic) {
+                diag_emit(
+                    DIAG_ERROR, annot->loc, "printf_like cannot be used on functions without variadic parameters"
+                );
+                return false;
+            }
+
+            target->is_printf_like       = 1;
+            target->printf_fmt_param_idx = fmt_param_idx;
+
+            return true;
+        }
+
+        default:
+            ICE("TODO: handle other annotation types");
+            return false;
     }
 }
 
@@ -1642,6 +2136,23 @@ static AstNode* preprocess_stmt(AstNode* stmt, Scope* scope) {
     }
 }
 
+typedef struct {
+    AstNode* func_decl;
+    int      fmt_param_idx;
+} PrintfLikeInfo;
+
+static PrintfLikeInfo printf_like_funcs[256];
+static int            printf_like_count = 0;
+
+static PrintfLikeInfo* find_printf_like_info(const char* func_name) {
+    for (int i = 0; i < printf_like_count; i++) {
+        if (strcmp(printf_like_funcs[i].func_decl->function_name, func_name) == 0) {
+            return &printf_like_funcs[i];
+        }
+    }
+    return NULL;
+}
+
 int semantic_check(Module* m, const CompileConfig* config) {
     int    prev   = diag_error_count;
     Scope* global = scope_new(NULL);
@@ -1681,16 +2192,40 @@ int semantic_check(Module* m, const CompileConfig* config) {
 
     for (int i = 0; i < m->count; i++) {
         AstNode* d = m->decls[i];
+        if (d->kind == AST_ANNOTATION) {
+            AstNode* target = NULL;
+
+            if (d->annot_type >= ANNOT_NO_MANGLE) {
+                for (int j = i + 1; j < m->count; j++) {
+                    if (m->decls[j]->kind != AST_ANNOTATION) {
+                        target = m->decls[j];
+                        break;
+                    }
+                }
+            }
+
+            d->annot_target = target;
+
+            if (d->annot_type >= ANNOT_NO_MANGLE) {
+                check_annotation(d, target);
+            }
+        }
+    }
+
+    for (int i = 0; i < m->count; i++) {
+        AstNode* d = m->decls[i];
         if (d->kind == AST_VAR_DECL && d->init) {
             Type* it = check_expr_hint(d->init, global, d->var_type);
             if (d->var_type && it && !types_equal(it, d->var_type) && !types_assignable(it, d->var_type)) {
                 char is[64], vs[64];
-                diag_emit(DIAG_ERROR,
-                          d->init->loc,
-                          "initializer type mismatch: '%s' has type %s, initializer has type %s",
-                          d->var_name,
-                          type_str(d->var_type, vs, sizeof(vs)),
-                          type_str(it, is, sizeof(is)));
+                diag_emit(
+                    DIAG_ERROR,
+                    d->init->loc,
+                    "initializer type mismatch: '%s' has type %s, initializer has type %s",
+                    d->var_name,
+                    type_str(d->var_type, vs, sizeof(vs)),
+                    type_str(it, is, sizeof(is))
+                );
                 diag_type_hint(it, d->var_type, d->init->loc);
             }
         }
@@ -1699,12 +2234,14 @@ int semantic_check(Module* m, const CompileConfig* config) {
                 Type* it = check_expr_hint(d->init, global, d->var_type);
                 if (it && !types_equal(it, d->var_type) && !types_assignable(it, d->var_type)) {
                     char is[64], vs[64];
-                    diag_emit(DIAG_ERROR,
-                              d->init->loc,
-                              "initializer type mismatch: '%s' has type %s, initializer has type %s",
-                              d->var_name,
-                              type_str(d->var_type, vs, sizeof(vs)),
-                              type_str(it, is, sizeof(is)));
+                    diag_emit(
+                        DIAG_ERROR,
+                        d->init->loc,
+                        "initializer type mismatch: '%s' has type %s, initializer has type %s",
+                        d->var_name,
+                        type_str(d->var_type, vs, sizeof(vs)),
+                        type_str(it, is, sizeof(is))
+                    );
                     diag_type_hint(it, d->var_type, d->init->loc);
                 }
             }
@@ -1744,17 +2281,19 @@ int semantic_check(Module* m, const CompileConfig* config) {
                 loc = m->decls[0]->loc;
             }
             diag_emit(DIAG_ERROR, loc, "main function not found; a program must have a main function");
-            diag_emit(DIAG_NOTE,
-                      loc,
-                      "Add a main function like:\n"
-                      "\n"
-                      "    main :: () -> i32 {\n"
-                      "        return 0;\n"
-                      "    }\n"
-                      "\n"
-                      "main can have 0 to 2 arguments (for argc/argv), "
-                      "and return void or any integer type\n"
-                      "If you dont want a main function use flag '--no-main' to compile as a library");
+            diag_emit(
+                DIAG_NOTE,
+                loc,
+                "Add a main function like:\n"
+                "\n"
+                "    main :: () -> i32 {\n"
+                "        return 0;\n"
+                "    }\n"
+                "\n"
+                "main can have 0 to 2 arguments (for argc/argv), "
+                "and return void or any integer type\n"
+                "If you dont want a main function use flag '--no-main' to compile as a library"
+            );
             diag_error_count++;
             return -1;
         }

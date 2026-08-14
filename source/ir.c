@@ -1165,8 +1165,10 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                         f->instrs[jmp_if_idx].label = end_label_idx;
                     }
                 }
-            } else if (iter_type &&
-                       (iter_type->kind == TYPE_ARRAY || (iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat))) {
+            } else if (
+                iter_type &&
+                (iter_type->kind == TYPE_ARRAY || (iter_type->kind == TYPE_PTR && iter_type->ptr_type.is_fat))
+            ) {
                 IrVal iterable = lower_expr(m, f, s->for_iterable, vars);
 
                 IrVal len_val;
@@ -1224,12 +1226,13 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                 idx_init_store->store_val = idx_init->dst;
 
                 if (s->for_val && s->for_val->kind == AST_IDENT) {
-                    IrVal loop_var_ptr = ensure_alloca(f,
-                                                       vars,
-                                                       s->for_val->ident,
-                                                       iter_type->kind == TYPE_ARRAY ? iter_type->array_type.elem_type
-                                                                                     : iter_type->ptr_type.elem_type,
-                                                       1);
+                    IrVal loop_var_ptr = ensure_alloca(
+                        f,
+                        vars,
+                        s->for_val->ident,
+                        iter_type->kind == TYPE_ARRAY ? iter_type->array_type.elem_type : iter_type->ptr_type.elem_type,
+                        1
+                    );
                 }
 
                 int      loop_label_idx = next_label(m);
@@ -1377,8 +1380,9 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                 } else {
                     IrVal init_val = lower_expr(m, f, s->init, vars);
                     if (init_val != IR_NO_VAL) {
-                        bool is_agg = (s->init->kind == AST_STRING_LIT && !(s->init->str_flags & STR_PREFIX_C) &&
-                                       !(s->init->str_flags & STR_PREFIX_B));
+                        bool is_agg =
+                            (s->init->kind == AST_STRING_LIT && !(s->init->str_flags & STR_PREFIX_C) &&
+                             !(s->init->str_flags & STR_PREFIX_B));
                         if (!is_agg) {
                             IrInstr* st   = emit(f);
                             st->op        = IR_STORE;
@@ -1556,8 +1560,9 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                 gep->gep_base      = array;
                 gep->gep_idx       = index;
                 gep->gep_scale     = scale;
-                gep->gep_base_type = was_fat_assign ? type_ptr(s->assign_target->array->type->ptr_type.elem_type, false, false)
-                                                    : s->assign_target->array->type;
+                gep->gep_base_type = was_fat_assign
+                                         ? type_ptr(s->assign_target->array->type->ptr_type.elem_type, false, false)
+                                         : s->assign_target->array->type;
 
                 IrVal new_val = assign_val;
                 if (s->assign_op != ASSIGN_EQ) {
@@ -2030,7 +2035,8 @@ void ir_dump(IrModule* m) {
                         break;
                     case IR_GEP:
                         pos += snprintf(
-                            buf + pos, sizeof(buf) - pos, "gep v%d[v%d * %d]", i->gep_base, i->gep_idx, i->gep_scale);
+                            buf + pos, sizeof(buf) - pos, "gep v%d[v%d * %d]", i->gep_base, i->gep_idx, i->gep_scale
+                        );
                         break;
                     case IR_FAT_PTR:
                         pos += snprintf(buf + pos, sizeof(buf) - pos, "fat_ptr v%d", i->src);
@@ -2040,7 +2046,8 @@ void ir_dump(IrModule* m) {
                         break;
                     case IR_FAT_SET_LEN:
                         pos += snprintf(
-                            buf + pos, sizeof(buf) - pos, "fat_set_len v%d <- v%d", i->store_ptr, i->store_val);
+                            buf + pos, sizeof(buf) - pos, "fat_set_len v%d <- v%d", i->store_ptr, i->store_val
+                        );
                         break;
                     case IR_CAST:
                         pos += snprintf(buf + pos, sizeof(buf) - pos, "cast v%d: ", i->cast_src);
@@ -2056,12 +2063,14 @@ void ir_dump(IrModule* m) {
                         }
                         break;
                     case IR_SELECT:
-                        pos += snprintf(buf + pos,
-                                        sizeof(buf) - pos,
-                                        "select v%d ? v%d : v%d",
-                                        i->sel_cond,
-                                        i->sel_true_val,
-                                        i->sel_false_val);
+                        pos += snprintf(
+                            buf + pos,
+                            sizeof(buf) - pos,
+                            "select v%d ? v%d : v%d",
+                            i->sel_cond,
+                            i->sel_true_val,
+                            i->sel_false_val
+                        );
                         break;
                     default:
                         ICE("unhandled IR opcode in ir_dump: %d", i->op);

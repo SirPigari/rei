@@ -57,7 +57,7 @@ Type* type_number_with_flag(TypeKind k, uint16_t bits, bool is_unsigned, bool is
 Type* type_void(void);
 Type* type_never(void);
 Type* type_ptr(Type* elem, bool is_fat, bool non_null);
-Type* type_array(Type* elem, size_t len); /* len=0 => unsized [T] */
+Type* type_array(Type* elem, size_t len);
 Type* type_abstract_int(void);
 Type* type_ident(const char* name);
 
@@ -81,7 +81,7 @@ typedef enum {
     AST_WHILE_STMT,  /* while (cond) body                 */
     AST_FOR_STMT,    /* for val: iterable body            */
     AST_ASSIGN,      /* target = expr;                    */
-    AST_ANNOTATION,  /* #annot                            */
+    AST_ANNOTATION,  /* #annot(args)                      */
 
     AST_INT_LIT,     /* 42, 42u8, 42i32                   */
     AST_FLOAT_LIT,   /* 3.14, 3.14f32                     */
@@ -180,8 +180,10 @@ struct AstNode {
             Param*   params;
             int      param_count;
             Type*    ret_type;
-            bool     is_extern;
             AstNode* body; /* NULL = decl */
+            unsigned is_extern      : 1;
+            unsigned is_printf_like : 1;
+            int      printf_fmt_param_idx; /* which param is the format string */
         };
 
         /* AST_VAR_DECL, AST_CONST_DECL */
@@ -238,9 +240,10 @@ struct AstNode {
         struct {
             AnnotationType annot_type;
             AstNode*       annot_target; /* NULL = no target */
-            AstNode*       annot_exprs; /* NULL = no exprs/couldnt parse */
+            AstNode**      annot_exprs;  /* NULL = no exprs/couldnt parse */
             size_t         annot_expr_count;
             const char*    annot_str;
+            unsigned       annot_arg_parse_failed : 1;
         };
 
         /* AST_INT_LIT */

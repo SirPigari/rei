@@ -297,7 +297,14 @@ static void emit_load_or_const(FILE* out, SlotMap* sm, IrVal v, int bytes, bool 
 }
 
 static void emit_load_or_const_to(
-    FILE* out, SlotMap* sm, IrVal v, const char* reg, int bytes, bool is_signed, const char* mem_expr) {
+    FILE*       out,
+    SlotMap*    sm,
+    IrVal       v,
+    const char* reg,
+    int         bytes,
+    bool        is_signed,
+    const char* mem_expr
+) {
     long long* const_val = ht_find(&sm->const_vals, v);
     if (const_val) {
         const char* target = reg_for_bytes(reg, bytes);
@@ -502,7 +509,8 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                             }
                         } else {
                             emit_load_or_const(
-                                out, &slotmap, i->call.args[a], arg_bytes, arg_signed, mem(arg_slot, buf));
+                                out, &slotmap, i->call.args[a], arg_bytes, arg_signed, mem(arg_slot, buf)
+                            );
                             L(out, "mov %s, %s", ARGREGS[reg_idx], "rax");
                         }
                         reg_idx++;
@@ -608,9 +616,11 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     }
                 } else {
                     emit_load_or_const_to(
-                        out, &slotmap, i->blhs, "rax", lhs_bytes, lhs_signed, mem(slot_of(&slotmap, i->blhs), buf));
+                        out, &slotmap, i->blhs, "rax", lhs_bytes, lhs_signed, mem(slot_of(&slotmap, i->blhs), buf)
+                    );
                     emit_load_or_const_to(
-                        out, &slotmap, i->brhs, "rcx", rhs_bytes, rhs_signed, mem(slot_of(&slotmap, i->brhs), buf2));
+                        out, &slotmap, i->brhs, "rcx", rhs_bytes, rhs_signed, mem(slot_of(&slotmap, i->brhs), buf2)
+                    );
 
                     switch (i->bop) {
                         case OP_ADD:
@@ -765,12 +775,14 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                         int  ret_bytes  = type_bytes(return_type);
                         bool ret_signed = type_is_signed(return_type);
                         emit_load_or_const(
-                            out, &slotmap, i->src, ret_bytes, ret_signed, mem(slot_of(&slotmap, i->src), buf));
+                            out, &slotmap, i->src, ret_bytes, ret_signed, mem(slot_of(&slotmap, i->src), buf)
+                        );
                     } else {
                         int  ret_bytes  = type_bytes(i->type);
                         bool ret_signed = type_is_signed(i->type);
                         emit_load_or_const(
-                            out, &slotmap, i->src, ret_bytes, ret_signed, mem(slot_of(&slotmap, i->src), buf));
+                            out, &slotmap, i->src, ret_bytes, ret_signed, mem(slot_of(&slotmap, i->src), buf)
+                        );
                     }
                 } else {
                     L(out, "xor eax, eax");
@@ -881,7 +893,8 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                         L(out, "lea rax, %s", mem(slot_of(&slotmap, i->store_val), buf2));
                     } else {
                         emit_load_or_const(
-                            out, &slotmap, i->store_val, bytes, is_signed, mem(slot_of(&slotmap, i->store_val), buf2));
+                            out, &slotmap, i->store_val, bytes, is_signed, mem(slot_of(&slotmap, i->store_val), buf2)
+                        );
                     }
 
                     switch (bytes) {
@@ -906,7 +919,8 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                         L(out, "lea rax, %s", mem(slot_of(&slotmap, i->store_val), buf2));
                     } else {
                         emit_load_or_const(
-                            out, &slotmap, i->store_val, bytes, is_signed, mem(slot_of(&slotmap, i->store_val), buf2));
+                            out, &slotmap, i->store_val, bytes, is_signed, mem(slot_of(&slotmap, i->store_val), buf2)
+                        );
                     }
 
                     switch (bytes) {
@@ -1250,10 +1264,12 @@ void codegen_x86_64_linux(IrModule* m, FILE* out) {
 
 extern bool copy_file(const char* src, const char* dst);
 
-bool codegen_x86_64_linux_compile(const char*           asm_path,
-                                  const char*           out_path,
-                                  const char*           tmp_dir,
-                                  const CompileOptions* opts) {
+bool codegen_x86_64_linux_compile(
+    const char*           asm_path,
+    const char*           out_path,
+    const char*           tmp_dir,
+    const CompileOptions* opts
+) {
     CompileOptions default_opts = {0};
     if (!opts)
         opts = &default_opts;
@@ -1285,13 +1301,15 @@ bool codegen_x86_64_linux_compile(const char*           asm_path,
         if (opts->make_static) {
             snprintf(cmd, sizeof(cmd), "ar rcs \"%s\" \"%s\" && rm \"%s\"", out_path, obj_path, obj_path);
         } else {
-            snprintf(cmd,
-                     sizeof(cmd),
-                     "gcc %s -shared -fPIC \"%s\" -o \"%s\" && rm \"%s\"",
-                     libs,
-                     obj_path,
-                     out_path,
-                     obj_path);
+            snprintf(
+                cmd,
+                sizeof(cmd),
+                "gcc %s -shared -fPIC \"%s\" -o \"%s\" && rm \"%s\"",
+                libs,
+                obj_path,
+                out_path,
+                obj_path
+            );
         }
     } else {
         snprintf(cmd, sizeof(cmd), "gcc %s -no-pie \"%s\" -o \"%s\" && rm \"%s\"", libs, obj_path, out_path, obj_path);

@@ -313,25 +313,29 @@ done:                                                  \
  */
 PARSE_BINOP(parse_power, parse_unary, case TK_STARSTAR : n_op = OP_POW; break;)
 
-PARSE_BINOP(parse_multiplicative, parse_power, case TK_STAR : n_op = OP_MUL; break; case TK_SLASH : n_op = OP_DIV;
-            break;
-            case TK_PERCENT : n_op = OP_MOD;
-            break;)
+PARSE_BINOP(
+    parse_multiplicative, parse_power, case TK_STAR : n_op = OP_MUL; break; case TK_SLASH : n_op = OP_DIV; break;
+    case TK_PERCENT : n_op = OP_MOD;
+    break;
+)
 
-PARSE_BINOP(parse_additive, parse_multiplicative, case TK_PLUS : n_op = OP_ADD; break; case TK_MINUS : n_op = OP_SUB;
-            break;)
+PARSE_BINOP(
+    parse_additive, parse_multiplicative, case TK_PLUS : n_op = OP_ADD; break; case TK_MINUS : n_op = OP_SUB; break;
+)
 
 PARSE_BINOP(parse_shift, parse_additive, case TK_SHL : n_op = OP_SHL; break; case TK_SHR : n_op = OP_SHR; break;)
 
-PARSE_BINOP(parse_relational, parse_shift, case TK_LESS : n_op = OP_LESS; break; case TK_LESSEQ : n_op = OP_LESSEQ;
-            break;
-            case TK_MORE : n_op = OP_MORE;
-            break;
-            case TK_MOREEQ : n_op = OP_MOREEQ;
-            break;)
+PARSE_BINOP(
+    parse_relational, parse_shift, case TK_LESS : n_op = OP_LESS; break; case TK_LESSEQ : n_op = OP_LESSEQ; break;
+    case TK_MORE : n_op = OP_MORE;
+    break;
+    case TK_MOREEQ : n_op = OP_MOREEQ;
+    break;
+)
 
-PARSE_BINOP(parse_equality, parse_relational, case TK_EQEQ : n_op = OP_EQ; break; case TK_BANGEQ : n_op = OP_NEQ;
-            break;)
+PARSE_BINOP(
+    parse_equality, parse_relational, case TK_EQEQ : n_op = OP_EQ; break; case TK_BANGEQ : n_op = OP_NEQ; break;
+)
 
 PARSE_BINOP(parse_bitwise_and, parse_equality, case TK_BITAND : n_op = OP_BITAND; break;)
 PARSE_BINOP(parse_bitwise_xor, parse_bitwise_and, case TK_BITXOR : n_op = OP_BITXOR; break;)
@@ -714,9 +718,9 @@ static AstNode* parse_one_extern(Lexer* l) {
 static AnnotationType parse_annotation_name(const char* name_str, size_t name_len) {
     if (name_len == 9 && memcmp(name_str, "no_mangle", 9) == 0)
         return ANNOT_NO_MANGLE;
-    if (name_len == 12 && memcmp(name_str, "printf_like", 12) == 0)
+    if (name_len == 11 && memcmp(name_str, "printf_like", 11) == 0)
         return ANNOT_PRINTF_LIKE;
-    if (name_len == 11 && memcmp(name_str, "scanf_like", 11) == 0)
+    if (name_len == 10 && memcmp(name_str, "scanf_like", 10) == 0)
         return ANNOT_SCANF_LIKE;
     if (name_len == 13 && memcmp(name_str, "strftime_like", 13) == 0)
         return ANNOT_STRFTIME_LIKE;
@@ -735,52 +739,93 @@ static AstNode* parse_annotation(Lexer* l) {
     Location loc = lexer_peek(l).loc;
     expect(l, TK_HASH);
     Token annot_name_tok = expect(l, TK_IDENT);
-    
-    AstNode* n = ast_node(AST_ANNOTATION, loc);
+
+    AstNode* n    = ast_node(AST_ANNOTATION, loc);
     n->annot_type = parse_annotation_name(annot_name_tok.start, annot_name_tok.len);
 
     if (n->annot_type == (AnnotationType)-1) {
-        diag_emit(DIAG_ERROR, annot_name_tok.loc, "unknown annotation: %.*s", (int)annot_name_tok.len,
-                  annot_name_tok.start);
+        diag_emit(
+            DIAG_ERROR, annot_name_tok.loc, "unknown annotation: %.*s", (int)annot_name_tok.len, annot_name_tok.start
+        );
     }
-    
+
     if (lexer_peek(l).kind == TK_LPAREN) {
         lexer_next(l);
-        
-        const char* src = lexer_source(l);
-        size_t start_pos = lexer_position(l);
-        
-        int paren_depth = 1;
-        size_t end_pos = start_pos;
-        
+
+        const char* src       = lexer_source(l);
+        size_t      start_pos = lexer_position(l);
+
+        int    paren_depth = 1;
+        size_t end_pos     = start_pos;
+
         while (paren_depth > 0 && src[end_pos] != '\0') {
-            if (src[end_pos] == '(') {
+            if (src[end_pos] == '(')
                 paren_depth++;
-            } else if (src[end_pos] == ')') {
+            else if (src[end_pos] == ')')
                 paren_depth--;
-                if (paren_depth == 0) break;
-            }
-            end_pos++;
+            if (paren_depth > 0)
+                end_pos++;
         }
-        
-        size_t len = end_pos - start_pos;
-        if (len == 0) {
+
+        size_t raw_len = end_pos - start_pos;
+        if (raw_len == 0) {
             n->annot_str = "";
         } else {
-            char* str = malloc(len + 1);
-            memcpy(str, src + start_pos, len);
-            str[len] = '\0';
-            n->annot_str = str;
+            char* raw = malloc(raw_len + 1);
+            memcpy(raw, src + start_pos, raw_len);
+            raw[raw_len] = '\0';
+            n->annot_str = raw;
         }
-        
+
+        size_t    cap   = 8;
+        size_t    count = 0;
+        AstNode** exprs = malloc(cap * sizeof(AstNode*));
+
+        diag_silence_start();
+
         while (lexer_peek(l).kind != TK_RPAREN && lexer_peek(l).kind != TK_EOF) {
-            lexer_next(l);
+            if (count >= cap) {
+                cap *= 2;
+                exprs = realloc(exprs, cap * sizeof(AstNode*));
+            }
+            AstNode* expr = parse_expr(l);
+            if (!expr) {
+                break;
+            }
+            exprs[count++] = expr;
+            if (lexer_peek(l).kind == TK_COMMA) {
+                lexer_next(l);
+            }
         }
-        expect(l, TK_RPAREN);
+
+        int parse_error = diag_had_error();
+        diag_silence_end();
+
+        if (!parse_error && lexer_peek(l).kind == TK_RPAREN) {
+            lexer_next(l);
+        } else if (!parse_error) {
+            parse_error = 1;
+        }
+
+        if (parse_error) {
+            n->annot_arg_parse_failed = 1;
+            n->annot_exprs            = NULL;
+            n->annot_expr_count       = 0;
+            free(exprs);
+        } else if (count == 0) {
+            n->annot_exprs      = NULL;
+            n->annot_expr_count = 0;
+            free(exprs);
+        } else {
+            n->annot_exprs      = exprs;
+            n->annot_expr_count = count;
+        }
     } else {
-        n->annot_str = NULL;
+        n->annot_str        = NULL;
+        n->annot_exprs      = NULL;
+        n->annot_expr_count = 0;
     }
-    
+
     return n;
 }
 
@@ -826,15 +871,15 @@ Module* parse(Lexer* l) {
         Token t = lexer_peek(l);
         if (t.kind == TK_EOF)
             break;
-        
+
         while (lexer_peek(l).kind == TK_HASH) {
             PUSH_DECL(parse_annotation(l));
         }
-        
+
         t = lexer_peek(l);
         if (t.kind == TK_EOF)
             break;
-        
+
         if (t.kind == TK_EXTERN) {
             lexer_next(l);
             parse_extern(l, &decls, &count, &cap);
