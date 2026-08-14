@@ -413,11 +413,13 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 arg_types[a] = arg_type;
             }
 
-            if (e->func_decl != NULL && e->arg_count < e->func_decl->param_count) {
+            if (e->func_decl != NULL && e->arg_count < e->func_decl->param_count && !e->func_decl->is_variadic) {
                 for (int a = e->arg_count; a < e->func_decl->param_count; a++) {
                     AstNode* default_expr = e->func_decl->params[a].default_value;
-                    if (default_expr == NULL)
-                        ICE("parameter %d has no default value but is missing from call", a);
+                    if (default_expr == NULL) {
+                        Param param = e->func_decl->params[a];
+                        ICE("parameter %s has no default value but is missing from call", param.name ? param.name : "");
+                    }
 
                     IrVal v = lower_expr(m, f, default_expr, vars);
                     if (v == IR_NO_VAL)

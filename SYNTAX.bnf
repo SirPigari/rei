@@ -4,21 +4,22 @@
 
 (*  Top level  *)
 
-module = { decl } ;
+module = { annotation } , { decl } ;
 
 decl = func-decl
      | extern-block
-     | var-decl
-     | const-decl ;
+     | top-var-decl
+     | top-const-decl
+     | annotation ;
+
+top-var-decl = ident , ":", type , [ "=" , expr ] , ";" ;
+
+top-const-decl = ident , "::" , expr , ";" ;
 
 
 (*  Declarations  *)
 
 func-decl = ident , "::" , "(" , param-list , ")" , "->" , type , block-stmt ;
-
-var-decl = ident , ":" , type , [ "=" , expr ] , ";" ;
-
-const-decl = ident , "::" , type , [ "=" , expr ] , ";" ;
 
 extern-block = "extern" , "{" , extern-decl , { "," , extern-decl } , "}"
              | "extern" , extern-decl , ";" ;
@@ -28,7 +29,15 @@ extern-decl = ident , "(" , param-list , ")" , "->" , type ;
 param-list = (* empty *)
            | param , { "," , param } ;
 
-param = ident , ":" , type ;
+param = [ ident , ":" ] , type , [ "=" , expr ]
+      | "..." , [ ident , ":" , type ] ;
+
+
+(*  Annotations  *)
+
+annotation = "#" , ident , [ "(" , annotation-args , ")" ] ;
+
+annotation-args = (* anything *) ;
 
 
 (*  Types  *)
@@ -37,9 +46,10 @@ param = ident , ":" , type ;
 (* defaults to 64 when omitted.                                *)
 
 type = base-type
-     | "*" , type                            (* pointer type    *)
-     | "[" , type , "]"                      (* array type [T]  *)
-     | "[" , type , ";" , int-lit , "]" ;   (* array type [T;N]*)
+     | "*" , [ "!" ] , type               (* pointer type; *!T is non-null *)
+     | "[" , type , "]"                   (* array type [T]  *)
+     | "[" , type , ";" , int-lit , "]"   (* array type [T;N]*)
+     | "!" ;                              (* never type      *)
 
 base-type = "void"
           | int-type
@@ -57,9 +67,10 @@ bits = digit , { digit } ;    (* any value in 0..65535 *)
 stmt = block-stmt
      | if-stmt
      | while-stmt
+     | for-stmt
      | return-stmt
-     | var-decl
-     | const-decl
+     | stmt-var-decl
+     | stmt-const-decl
      | var-assign
      | index-assign
      | expr-stmt ;
@@ -70,15 +81,18 @@ if-stmt = "if" , expr , stmt , [ "else" , stmt ] ;
 
 while-stmt = "while" , expr , stmt ;
 
+for-stmt = "for" , ident , ":" , expr , stmt ;
+
 return-stmt = "return" , [ expr ] , ";" ;
 
-var-decl = ident , ":" , type , [ "=" , expr ] , ";" ;
+stmt-var-decl = ident , ":" , type , [ "=" , expr ] , ";"
+              | ident , ":=" , expr , ";" ;
 
-const-decl = ident , "::" , type , [ "=" , expr ] , ";" ;
+stmt-const-decl = ident , "::" , type , [ "=" , expr ] , ";" ;
 
 var-assign = ident , assign-op , expr , ";" ;
 
-index-assign = postfix-expr , "[" , expr , "]" , assign-op , expr , ";" ;
+index-assign = ident , { postfix-op } , "[" , expr , "]" , assign-op , expr , ";" ;
 
 assign-op = "=" | "+=" | "-=" | "*=" | "/=" | "%="
           | "&=" | "|=" | "^=" | "~=" | "<<=" | ">>="
@@ -89,7 +103,9 @@ expr-stmt = expr , ";" ;
 
 (*  Expressions  (precedence low -> high, all left-associative)  *)
 
-expr = logical-or ;
+expr = range ;
+
+range = logical-or , [ ( ".." | "..<" ) , logical-or , [ ":" , logical-or ] ] ;
 
 logical-or = logical-and , { "||" , logical-and } ;
 
@@ -129,14 +145,14 @@ unary = unary-op , unary
 
 unary-op = "-" | "+" | "!" | "~" | "&" | "*" | "++" | "--" ;
 
-postfix = postfix-expr , [ postfix-op ] ;
+postfix = primary , { postfix-op } ;
 
-postfix-expr = primary , { postfix-expr-op } ;
-
-postfix-expr-op = "[" , expr , "]"               (* array indexing  *)
-                | "(" , arg-list , ")" ;        (* function call    *)
-
-postfix-op = "++" | "--" ;
+postfix-op = "[" , expr , "]"              (* array indexing  *)
+           | "(" , arg-list , ")"          (* function call    *)
+           | "." , ident                   (* member access    *)
+           | "as" , ( type | "?" )         (* cast operator    *)
+           | "++"                          (* postfix increment *)
+           | "--" ;                        (* postfix decrement *)
 
 
 (*  Primary expressions  *)
@@ -146,6 +162,7 @@ primary = int-lit
         | str-lit
         | array-lit
         | ident
+        | "nullptr"
         | "(" , expr , ")" ;
 
 array-lit = "[" , [ expr , { "," , expr } ] , "]" ;
@@ -190,6 +207,9 @@ letter = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i"
 (* "if"     - if-stmt keyword                                  *)
 (* "else"   - else branch keyword                              *)
 (* "while"  - while-stmt keyword                               *)
+(* "for"    - for-stmt keyword                                 *)
 (* "return" - return-stmt keyword                              *)
 (* "extern" - extern declaration keyword                       *)
 (* "void"   - type keyword                                     *)
+(* "as"     - cast operator keyword                            *)
+(* "nullptr" - null pointer literal                            *)
