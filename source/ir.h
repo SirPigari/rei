@@ -28,6 +28,7 @@ typedef enum {
     IR_FAT_SET_LEN, /* fat.len = val     -- store length into fat pointer alloca */
     IR_CAST,        /* v = (type)src     -- numeric type conversion */
     IR_SELECT,      /* v = cond ? true_val : false_val  -- ternary select */
+    IR_NULL_CHECK,  /* check that ptr is non-null (no dst); src = ptr to check */
 } IrOpcode;
 
 typedef struct {
@@ -128,6 +129,7 @@ typedef struct {
     int          str_cap;
     MainFuncInfo rei_main;
     int          next_label;
+    bool no_assertions;
 } IrModule;
 
 IrModule* ir_lower(Module* ast);

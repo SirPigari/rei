@@ -9,6 +9,8 @@
 #include <string.h>
 
 static bool types_equal(Type* a, Type* b) {
+    if (a == b)
+        return true;
     if (!a || !b)
         return a == b;
     if (a->kind != b->kind)
@@ -21,13 +23,20 @@ static bool types_equal(Type* a, Type* b) {
                 return false;
             if (a->int_type.is_size != b->int_type.is_size)
                 return false;
-            return a->bits == b->bits && a->int_type.is_unsigned == b->int_type.is_unsigned;
+            bool result = a->bits == b->bits && a->int_type.is_unsigned == b->int_type.is_unsigned;
+            if (!result) {
+                fprintf(stderr, "[DEBUG] INT types not equal: a(bits=%d, unsigned=%d, abstract=%d, size=%d), b(bits=%d, unsigned=%d, abstract=%d, size=%d)\n",
+                        a->bits, a->int_type.is_unsigned, a->int_type.is_abstract, a->int_type.is_size,
+                        b->bits, b->int_type.is_unsigned, b->int_type.is_abstract, b->int_type.is_size);
+            }
+            return result;
         case TYPE_FLOAT:
             if (a->int_type.is_size != b->int_type.is_size)
                 return false;
             return a->bits == b->bits;
         case TYPE_PTR:
             return a->ptr_type.is_fat == b->ptr_type.is_fat &&
+                   a->ptr_type.non_null == b->ptr_type.non_null &&
                    types_equal(a->ptr_type.elem_type, b->ptr_type.elem_type);
         case TYPE_ARRAY:
             return a->array_type.len == b->array_type.len &&
@@ -80,7 +89,11 @@ static char* type_str(Type* t, char* buf, size_t cap) {
         case TYPE_PTR: {
             char inner[64];
             type_str(t->ptr_type.elem_type, inner, sizeof(inner));
-            snprintf(buf, cap, t->ptr_type.is_fat ? "[]%s" : "*%s", inner);
+            if (t->ptr_type.is_fat) {
+                snprintf(buf, cap, "[]%s%s", t->ptr_type.non_null ? "!" : "", inner);
+            } else {
+                snprintf(buf, cap, "*%s%s", t->ptr_type.non_null ? "!" : "", inner);
+            }
             break;
         }
         case TYPE_ARRAY: {
@@ -151,6 +164,9 @@ static bool types_ptr_compatible(Type* actual, Type* expected) {
         return false;
 
     if (actual->ptr_type.is_fat != expected->ptr_type.is_fat)
+        return false;
+
+    if (expected->ptr_type.non_null && !actual->ptr_type.non_null)
         return false;
 
     Type* void_type        = type_void();
@@ -245,6 +261,18 @@ static void diag_type_hint(Type* actual, Type* expected, Location arg_loc) {
                 arg_loc,
                 "thin pointer cannot coerce to a fat pointer (slice) automatically; "
                 "wrap it in a slice expression or change the declaration"
+            );
+            return;
+        }
+
+        if (!actual->ptr_type.non_null && expected->ptr_type.non_null && actual_inner &&
+            types_equal(actual_inner, expected_inner)) {
+            char ts[64];
+            diag_emit(
+                DIAG_NOTE,
+                arg_loc,
+                "to override this check, use a cast: value as %s - but only if you are certain it's not null",
+                type_str(expected, ts, sizeof(ts))
             );
             return;
         }
@@ -554,14 +582,36 @@ typedef struct {
 
 typedef struct Scope {
     Ht(const char*, SymbolEntry) syms;
+    Ht(const char*, int) non_null_vars;
     struct Scope* parent;
 } Scope;
 
 static Scope* scope_new(Scope* parent) {
     Scope* s       = calloc(1, sizeof(*s));
     s->syms.hasheq = ht_cstr_hasheq;
+    s->non_null_vars.hasheq = ht_cstr_hasheq;
     s->parent      = parent;
     return s;
+}
+
+static bool var_is_known_nonnull(Scope* sc, const char* name) {
+    for (; sc; sc = sc->parent) {
+        int* marked = ht_find(&sc->non_null_vars, name);
+        if (marked)
+            return true;
+    }
+    return false;
+}
+
+static void mark_nonnull(Scope* sc, const char* name) {
+    *ht_put(&sc->non_null_vars, name) = 1;
+}
+
+static Type* try_narrow_ptr_to_nonnull(Type* t) {
+    if (!t || t->kind != TYPE_PTR || t->ptr_type.non_null)
+        return t;
+    Type* narrowed = type_ptr(t->ptr_type.elem_type, t->ptr_type.is_fat, true);
+    return narrowed;
 }
 
 static void scope_add(Scope* sc, const char* name, AstNode* decl, Type* type) {
@@ -649,6 +699,43 @@ static void  check_stmt(AstNode* s, Scope* sc, AstNode* fn);
 
 static Type* check_expr(AstNode* e, Scope* sc) {
     return check_expr_hint(e, sc, NULL);
+}
+
+static const char* extract_null_check_var(AstNode* cond, bool* is_negated) {
+    if (!cond || cond->kind != AST_BINOP)
+        return NULL;
+    
+    if ((cond->op == OP_EQ && (cond->rhs->kind == AST_NULLPTR || cond->lhs->kind == AST_NULLPTR)) ||
+        (cond->op == OP_NEQ && (cond->rhs->kind == AST_NULLPTR || cond->lhs->kind == AST_NULLPTR))) {
+        
+        AstNode* ptr_expr = cond->lhs->kind == AST_NULLPTR ? cond->rhs : cond->lhs;
+        if (ptr_expr->kind == AST_IDENT) {
+            *is_negated = (cond->op == OP_NEQ);
+            return ptr_expr->ident;
+        }
+    }
+    return NULL;
+}
+
+static bool stmt_always_exits(AstNode* stmt) {
+    if (!stmt)
+        return false;
+    
+    switch (stmt->kind) {
+        case AST_RETURN_STMT:
+            return true;
+        
+        case AST_BLOCK_STMT: {
+            for (int i = 0; i < stmt->stmt_count; i++) {
+                if (stmt_always_exits(stmt->stmts[i]))
+                    return true;
+            }
+            return false;
+        }
+        
+        default:
+            return false;
+    }
 }
 
 static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
@@ -754,6 +841,10 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 }
             } else {
                 e->type = resolve_type(sym->type, sc);
+                
+                if (e->type && e->type->kind == TYPE_PTR && var_is_known_nonnull(sc, e->ident)) {
+                    e->type = try_narrow_ptr_to_nonnull(e->type);
+                }
             }
             return e->type;
         }
@@ -825,6 +916,19 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     Type* param_hint = fn->params[i].type;
                     Type* at         = check_expr_hint(e->args[i], sc, param_hint);
                     Type* pt         = fn->params[i].type;
+                    
+                    if (pt && pt->kind == TYPE_PTR && pt->ptr_type.non_null && e->args[i]->kind == AST_NULLPTR) {
+                        char ps[64];
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->args[i]->loc,
+                            "argument %d of '%s': cannot pass nullptr to non-null pointer parameter %s",
+                            i + 1,
+                            fn->function_name,
+                            type_str(pt, ps, sizeof(ps))
+                        );
+                    }
+                    
                     if (!types_assignable(at, pt)) {
                         char as[64], ps[64];
                         diag_emit(
@@ -894,7 +998,9 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 rt = check_expr_hint(e->rhs, sc, hint);
             }
 
-            if (is_pointer(lt) || is_pointer(rt)) {
+            bool is_cmp = (e->op == OP_EQ || e->op == OP_NEQ || e->op == OP_LESS || e->op == OP_LESSEQ || e->op == OP_MORE || e->op == OP_MOREEQ);
+            
+            if ((is_pointer(lt) || is_pointer(rt)) && !is_cmp) {
                 if (e->op == OP_ADD) {
                     if (is_pointer(lt) && is_pointer(rt)) {
                         diag_emit(DIAG_ERROR, e->loc, "cannot add two pointers");
@@ -972,6 +1078,19 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 bool is_comparison =
                     (e->op == OP_EQ || e->op == OP_NEQ || e->op == OP_LESS || e->op == OP_LESSEQ || e->op == OP_MORE ||
                      e->op == OP_MOREEQ);
+
+                bool lhs_is_nullptr = e->lhs->kind == AST_NULLPTR;
+                bool rhs_is_nullptr = e->rhs->kind == AST_NULLPTR;
+                bool ptr_cmp_null = is_comparison && (
+                    (lhs_is_nullptr && is_pointer(rt)) ||
+                    (rhs_is_nullptr && is_pointer(lt)) ||
+                    (is_pointer(lt) && is_pointer(rt))
+                );
+                
+                if (ptr_cmp_null) {
+                    e->type = type_number(TYPE_INT, 32, 0);
+                    return e->type;
+                }
 
                 if (is_comparison && types_compatible_numeric(lt, rt)) {
                     e->type = lt;
@@ -1055,11 +1174,38 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 }
             }
 
-            bool is_cmp =
-                (e->op == OP_EQ || e->op == OP_NEQ || e->op == OP_LESS || e->op == OP_MORE || e->op == OP_LESSEQ ||
-                 e->op == OP_MOREEQ);
-
             if (is_cmp) {
+                if ((e->op == OP_EQ || e->op == OP_NEQ) && is_pointer(lt) && is_pointer(rt)) {
+                    bool lhs_is_nullptr = (e->lhs->kind == AST_NULLPTR || 
+                                          (e->lhs->kind == AST_IDENT && 
+                                           lt->kind == TYPE_PTR && !lt->ptr_type.non_null &&
+                                           !var_is_known_nonnull(sc, e->lhs->ident)));
+                    bool rhs_is_nullptr = (e->rhs->kind == AST_NULLPTR || 
+                                          (e->rhs->kind == AST_IDENT && 
+                                           rt->kind == TYPE_PTR && !rt->ptr_type.non_null &&
+                                           !var_is_known_nonnull(sc, e->rhs->ident)));
+                    
+                    if (lhs_is_nullptr && rhs_is_nullptr) {
+                        diag_emit(DIAG_WARN, e->loc, "comparing nullptr to nullptr is always %s", 
+                                 e->op == OP_EQ ? "true" : "false");
+                    } else if (lhs_is_nullptr && rt && rt->kind == TYPE_PTR && rt->ptr_type.non_null) {
+                        diag_emit(DIAG_WARN, e->loc, 
+                                 "pointer on right is non-null, comparison with nullptr is always %s",
+                                 e->op == OP_EQ ? "false" : "true");
+                    } else if (rhs_is_nullptr && lt && lt->kind == TYPE_PTR && lt->ptr_type.non_null) {
+                        diag_emit(DIAG_WARN, e->loc, 
+                                 "pointer on left is non-null, comparison with nullptr is always %s",
+                                 e->op == OP_EQ ? "false" : "true");
+                    } else if (rhs_is_nullptr && e->lhs->kind == AST_IDENT && var_is_known_nonnull(sc, e->lhs->ident)) {
+                        diag_emit(DIAG_WARN, e->loc, 
+                                 "pointer has been null-checked, comparison with nullptr is always %s",
+                                 e->op == OP_EQ ? "false" : "true");
+                    } else if (lhs_is_nullptr && e->rhs->kind == AST_IDENT && var_is_known_nonnull(sc, e->rhs->ident)) {
+                        diag_emit(DIAG_WARN, e->loc, 
+                                 "pointer has been null-checked, comparison with nullptr is always %s",
+                                 e->op == OP_EQ ? "false" : "true");
+                    }
+                }
                 e->type = type_number(TYPE_INT, 32, 0);
             } else {
                 if (is_abstract_int(lt) && is_abstract_int(rt)) {
@@ -1238,7 +1384,23 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 e->type = hint;
             } else {
                 e->type = resolve_type(e->cast_type, sc);
+                
+                if (e->type && e->type->kind == TYPE_PTR && e->type->ptr_type.elem_type) {
+                    if (e->type->ptr_type.elem_type->kind == TYPE_IDENT) {
+                        e->type->ptr_type.elem_type = resolve_type(e->type->ptr_type.elem_type, sc);
+                    }
+                }
             }
+            
+            if (expr_type && expr_type->kind == TYPE_PTR && e->type && e->type->kind == TYPE_PTR) {
+                bool is_nullptr = e->cast_expr->kind == AST_NULLPTR;
+                
+                if (is_nullptr && e->type->ptr_type.non_null) {
+                    diag_emit(DIAG_ERROR, e->loc, 
+                             "cannot cast nullptr to non-null pointer type");
+                }
+            }
+            
             return e->type;
         }
 
@@ -1379,9 +1541,41 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                     type_str(ct, ts, sizeof(ts))
                 );
             }
-            check_stmt(s->then_branch, sc, fn);
-            if (s->else_branch)
-                check_stmt(s->else_branch, sc, fn);
+            
+            bool is_negated = false;
+            const char* null_checked_var = extract_null_check_var(s->if_cond, &is_negated);
+            
+            if (null_checked_var) {
+                Scope* then_sc = scope_new(sc);
+                
+                if (is_negated) {
+                    mark_nonnull(then_sc, null_checked_var);
+                }
+                
+                check_stmt(s->then_branch, then_sc, fn);
+                ht_free(&then_sc->non_null_vars);
+                free(then_sc);
+                
+                if (s->else_branch) {
+                    Scope* else_sc = scope_new(sc);
+                    if (!is_negated) {
+                        mark_nonnull(else_sc, null_checked_var);
+                    }
+                    check_stmt(s->else_branch, else_sc, fn);
+                    ht_free(&else_sc->non_null_vars);
+                    free(else_sc);
+                }
+                
+                if (is_negated && stmt_always_exits(s->then_branch)) {
+                    mark_nonnull(sc, null_checked_var);
+                } else if (!is_negated && stmt_always_exits(s->then_branch) && !s->else_branch) {
+                    mark_nonnull(sc, null_checked_var);
+                }
+            } else {
+                check_stmt(s->then_branch, sc, fn);
+                if (s->else_branch)
+                    check_stmt(s->else_branch, sc, fn);
+            }
             break;
         }
 
@@ -1468,15 +1662,31 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                     if (!types_compatible_with_decay(it, s->var_type) && !types_assignable(it, s->var_type) &&
                         !is_error_type(it)) {
                         char is[64], vs[64];
-                        diag_emit(
-                            DIAG_ERROR,
-                            s->init->loc,
-                            "variable '%s': expected %s, initializer has type %s",
-                            s->var_name,
-                            type_str(s->var_type, vs, sizeof(vs)),
-                            type_str(it, is, sizeof(is))
-                        );
-                        diag_type_hint(it, s->var_type, s->init->loc);
+                        
+                        if (it && s->var_type && 
+                            it->kind == TYPE_PTR && s->var_type->kind == TYPE_PTR &&
+                            !it->ptr_type.non_null && s->var_type->ptr_type.non_null &&
+                            it->ptr_type.is_fat == s->var_type->ptr_type.is_fat &&
+                            types_equal(it->ptr_type.elem_type, s->var_type->ptr_type.elem_type)) {
+                            diag_emit(
+                                DIAG_ERROR,
+                                s->init->loc,
+                                "variable '%s': cannot assign nullable pointer to non-null pointer; "
+                                "the *! prefix is a guarantee that the value is never null",
+                                s->var_name
+                            );
+                            diag_type_hint(it, s->var_type, s->init->loc);
+                        } else {
+                            diag_emit(
+                                DIAG_ERROR,
+                                s->init->loc,
+                                "variable '%s': expected %s, initializer has type %s",
+                                s->var_name,
+                                type_str(s->var_type, vs, sizeof(vs)),
+                                type_str(it, is, sizeof(is))
+                            );
+                            diag_type_hint(it, s->var_type, s->init->loc);
+                        }
                         scope_type = it;
                     }
                 }

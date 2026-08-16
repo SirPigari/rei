@@ -212,4 +212,4 @@ letter = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i"
 (* "extern"  - extern declaration keyword                       *)
 (* "void"    - type keyword                                     *)
 (* "as"      - cast operator keyword                            *)
-(* "nullptr" - null pointer literal                            *)
+(* "nullptr" - null pointer literal                             *)

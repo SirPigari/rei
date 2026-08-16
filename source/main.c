@@ -173,17 +173,18 @@ int main(int argc, char** argv) {
     char**      prog_args   = NULL;
     int         prog_argc   = 0;
 
-    bool dump_ast     = false;
-    bool dump_ir      = false;
-    bool dump_asm     = false;
-    bool run          = false;
-    bool compile_only = false;
-    bool asm_only     = false;
-    bool make_lib     = false;
-    bool make_static  = false;
-    bool no_rei_main  = false;
-    bool no_main      = false;
-    bool no_libm      = false;
+    bool dump_ast      = false;
+    bool dump_ir       = false;
+    bool dump_asm      = false;
+    bool run           = false;
+    bool compile_only  = false;
+    bool asm_only      = false;
+    bool make_lib      = false;
+    bool make_static   = false;
+    bool no_rei_main   = false;
+    bool no_main       = false;
+    bool no_libm       = false;
+    bool no_assertions = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--") == 0) {
@@ -220,6 +221,8 @@ int main(int argc, char** argv) {
             no_main = true;
         } else if (strcmp(argv[i], "--no-libm") == 0) {
             no_libm = true;
+        } else if (strcmp(argv[i], "--no-assertions") == 0) {
+            no_assertions = true;
         } else if (argv[i][0] != '-') {
             src_path = argv[i];
         } else {
@@ -284,6 +287,7 @@ int main(int argc, char** argv) {
         goto done;
 
     IrModule* ir = ir_lower(module);
+    ir->no_assertions = no_assertions; /* TODO: make nicer api */
 
     if (dump_ir) {
         ir_dump(ir);
@@ -352,6 +356,7 @@ int main(int argc, char** argv) {
         .asm_only     = asm_only,
         .make_lib     = make_lib,
         .make_static  = make_static,
+        .no_libm      = no_libm,
     };
 
     if (!target->compile(asm_path, out_path, tmp_dir, &compile_opts)) {

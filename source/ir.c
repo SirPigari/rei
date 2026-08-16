@@ -328,8 +328,14 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 if (vars) {
                     VarSlot* slot = ht_find(vars, e->ident);
                     if (slot && slot->ptr != IR_NO_VAL) {
-                        if (e->type && (e->type->kind == TYPE_ARRAY || e->type->kind == TYPE_PTR)) {
-                            if (e->type->kind == TYPE_PTR && e->type->ptr_type.is_fat && slot->val != IR_NO_VAL) {
+                        if (e->type && (e->type->kind == TYPE_ARRAY)) {
+                            return slot->ptr;
+                        }
+                        if (e->type && e->type->kind == TYPE_PTR) {
+                            if (e->type->ptr_type.is_fat && slot->val != IR_NO_VAL) {
+                                return slot->val;
+                            }
+                            if (slot->val != IR_NO_VAL) {
                                 return slot->val;
                             }
                             return slot->ptr;
@@ -360,8 +366,14 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 VarSlot* slot = ht_find(vars, e->ident);
                 if (slot) {
                     if (slot->ptr != IR_NO_VAL) {
-                        if (e->type && (e->type->kind == TYPE_ARRAY || e->type->kind == TYPE_PTR)) {
-                            if (e->type->kind == TYPE_PTR && e->type->ptr_type.is_fat && slot->val != IR_NO_VAL) {
+                        if (e->type && (e->type->kind == TYPE_ARRAY)) {
+                            return slot->ptr;
+                        }
+                        if (e->type && e->type->kind == TYPE_PTR) {
+                            if (e->type->ptr_type.is_fat && slot->val != IR_NO_VAL) {
+                                return slot->val;
+                            }
+                            if (slot->val != IR_NO_VAL) {
                                 return slot->val;
                             }
                             return slot->ptr;
@@ -396,6 +408,16 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                     ICE("call argument lowered to IR_NO_VAL");
 
                 Type* arg_type = e->args[a]->type;
+
+                if (e->func_decl != NULL && a < e->func_decl->param_count) {
+                    Type* param_type = e->func_decl->params[a].type;
+                    if (param_type && param_type->kind == TYPE_PTR && param_type->ptr_type.non_null) {
+                        IrInstr* chk = emit(f);
+                        chk->op  = IR_NULL_CHECK;
+                        chk->dst = IR_NO_VAL;
+                        chk->src = v;
+                    }
+                }
 
                 if (arg_type && arg_type->kind == TYPE_FLOAT && arg_type->bits == 32) {
                     Type*    f64_type    = type_number(TYPE_FLOAT, 64, 0);
@@ -893,6 +915,15 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 }
                 case UOP_DEREF: {
                     IrVal    ptr = lower_expr(m, f, e->operand, vars);
+                    
+                    if (e->operand->type && e->operand->type->kind == TYPE_PTR && 
+                        e->operand->type->ptr_type.non_null) {
+                        IrInstr* chk = emit(f);
+                        chk->op  = IR_NULL_CHECK;
+                        chk->dst = IR_NO_VAL;
+                        chk->src = ptr;
+                    }
+                    
                     IrInstr* ld  = emit(f);
                     ld->op       = IR_LOAD;
                     ld->dst      = next_val(f);
@@ -1422,6 +1453,13 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                             (s->init->kind == AST_STRING_LIT && !(s->init->str_flags & STR_PREFIX_C) &&
                              !(s->init->str_flags & STR_PREFIX_B));
                         if (!is_agg) {
+                            if (vtype && vtype->kind == TYPE_PTR && vtype->ptr_type.non_null) {
+                                IrInstr* chk = emit(f);
+                                chk->op  = IR_NULL_CHECK;
+                                chk->dst = IR_NO_VAL;
+                                chk->src = init_val;
+                            }
+
                             IrInstr* st   = emit(f);
                             st->op        = IR_STORE;
                             st->dst       = IR_NO_VAL;
@@ -1525,6 +1563,13 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                 }
 
                 if (slot && slot->ptr != IR_NO_VAL) {
+                    if (s->type && s->type->kind == TYPE_PTR && s->type->ptr_type.non_null) {
+                        IrInstr* chk = emit(f);
+                        chk->op  = IR_NULL_CHECK;
+                        chk->dst = IR_NO_VAL;
+                        chk->src = new_val;
+                    }
+
                     IrInstr* st   = emit(f);
                     st->op        = IR_STORE;
                     st->dst       = IR_NO_VAL;
