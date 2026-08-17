@@ -18,15 +18,15 @@ static struct {
 #define REI_FUNC_PREFIX            "rei__"
 #define REI_ASSERTION_NULL_PTR_MSG "Rei: null pointer assertion"
 
-#define MAX_ARGREGS                6
-#define MAX_XMMREGS                8
-#define STACK_ALIGNMENT            16
-#define STACK_ALIGN_ADJUSTMENT     15
-#define MALLOC_ALIGNMENT_MASK      ~15
-#define REGISTER_SIZE              8
-#define FAT_PTR_SIZE               16
-#define SELECT_LABEL_BASE          0
-#define NULL_CHECK_LABEL_BASE      0
+#define MAX_ARGREGS            6
+#define MAX_XMMREGS            8
+#define STACK_ALIGNMENT        16
+#define STACK_ALIGN_ADJUSTMENT 15
+#define MALLOC_ALIGNMENT_MASK  ~15
+#define REGISTER_SIZE          8
+#define FAT_PTR_SIZE           16
+#define SELECT_LABEL_BASE      0
+#define NULL_CHECK_LABEL_BASE  0
 
 static const char* ARGREGS[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
 static const char* XMMREGS[] = {"xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"};
@@ -39,15 +39,15 @@ typedef struct {
 } RegisterVariants;
 
 static const RegisterVariants REGISTER_VARIANTS[] = {
-    {"al", "ax", "eax", "rax"},          /* rax */
-    {"cl", "cx", "ecx", "rcx"},          /* rcx */
-    {"r10b", "r10w", "r10d", "r10"},     /* r10 */
-    {"r11b", "r11w", "r11d", "r11"},     /* r11 */
-    {"dil", "di", "edi", "rdi"},         /* rdi */
-    {"sil", "si", "esi", "rsi"},         /* rsi */
-    {"dl", "dx", "edx", "rdx"},          /* rdx */
-    {"r8b", "r8w", "r8d", "r8"},         /* r8  */
-    {"r9b", "r9w", "r9d", "r9"},         /* r9  */
+    {"al", "ax", "eax", "rax"},      /* rax */
+    {"cl", "cx", "ecx", "rcx"},      /* rcx */
+    {"r10b", "r10w", "r10d", "r10"}, /* r10 */
+    {"r11b", "r11w", "r11d", "r11"}, /* r11 */
+    {"dil", "di", "edi", "rdi"},     /* rdi */
+    {"sil", "si", "esi", "rsi"},     /* rsi */
+    {"dl", "dx", "edx", "rdx"},      /* rdx */
+    {"r8b", "r8w", "r8d", "r8"},     /* r8  */
+    {"r9b", "r9w", "r9d", "r9"},     /* r9  */
 };
 
 static const int REGISTER_VARIANTS_COUNT = sizeof(REGISTER_VARIANTS) / sizeof(REGISTER_VARIANTS[0]);
@@ -131,7 +131,10 @@ static SymMap symmap_build(IrModule* m) {
     for (int i = 0; i < m->count; i++) {
         IrFunc*     f = m->funcs[i];
         const char* asm_name;
-        if (f->is_extern || f->no_mangle) {
+        
+        if (f->link_name) {
+            asm_name = f->link_name;
+        } else if (f->is_extern || f->no_mangle) {
             asm_name = f->name;
         } else {
             char* buf = malloc(strlen(REI_FUNC_PREFIX) + strlen(f->name) + 1);
@@ -175,9 +178,16 @@ static const struct {
     const char* name;
     int         idx;
 } REGISTER_LOOKUP[] = {
-    {"rax", 0}, {"rcx", 1}, {"r10", 2}, {"r11", 3},
-    {"rdi", 4}, {"rsi", 5}, {"rdx", 6}, {"r8", 7},
-    {"r9", 8},  {NULL, -1}
+    {"rax", 0},
+    {"rcx", 1},
+    {"r10", 2},
+    {"r11", 3},
+    {"rdi", 4},
+    {"rsi", 5},
+    {"rdx", 6},
+    {"r8", 7},
+    {"r9", 8},
+    {NULL, -1}
 };
 
 static int register_index_for_name(const char* base_reg) {
@@ -194,13 +204,17 @@ static const char* reg_for_bytes(const char* base_reg, int bytes) {
         ICE("unknown register: %s", base_reg);
         return base_reg;
     }
-    
+
     const RegisterVariants* rv = &REGISTER_VARIANTS[idx];
     switch (bytes) {
-        case 1: return rv->b8;
-        case 2: return rv->b16;
-        case 4: return rv->b32;
-        case 8: return rv->b64;
+        case 1:
+            return rv->b8;
+        case 2:
+            return rv->b16;
+        case 4:
+            return rv->b32;
+        case 8:
+            return rv->b64;
         default:
             ICE("unsupported register size: %d bytes", bytes);
             return base_reg;
@@ -210,7 +224,7 @@ static const char* reg_for_bytes(const char* base_reg, int bytes) {
 static void emit_load_slot_to(FILE* out, const char* reg, int bytes, bool is_signed, const char* mem_expr) {
     const char* target = reg_for_bytes(reg, bytes);
     const char* dest16 = reg_for_bytes(reg, 2);
-    
+
     switch (bytes) {
         case 8:
             L(out, "mov %s, qword %s", target, mem_expr);
@@ -346,7 +360,6 @@ static void emit_store_slot(FILE* out, int bytes, const char* mem_expr) {
     emit_store_slot_from(out, bytes, mem_expr, "rax");
 }
 
-
 static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
     fprintf(out, "%s:\n", symmap_lookup(sm, f->name));
     L(out, "push %s", "rbp");
@@ -385,7 +398,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             } else {
                 if (ht_find(&slotmap.offsets, ins->dst))
                     continue;
-                
+
                 int size = type_bytes(ins->type);
                 if (ins->type && ins->type->kind == TYPE_PTR && ins->type->ptr_type.is_fat) {
                     size = FAT_PTR_SIZE;
@@ -493,8 +506,8 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     L(out, "sub rsp, %d", sub_amount);
                 }
 
-                reg_idx      = 0;
-                xmm_idx      = 0;
+                reg_idx          = 0;
+                xmm_idx          = 0;
                 int stack_offset = stack_space;
 
                 for (int a = 0; a < i->call.arg_count; a++) {
@@ -604,62 +617,77 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 bool rhs_signed = i->rhs_type ? type_is_signed(i->rhs_type) : false;
                 bool cmp_signed = lhs_signed || rhs_signed;
                 bool is_float   = i->lhs_type && i->lhs_type->kind == TYPE_FLOAT;
+                bool is_f32_op  = is_float && lhs_bytes == 4 && rhs_bytes == 4;
 
                 if (is_float) {
                     long long* lhs_const = ht_find(&slotmap.const_vals, i->blhs);
                     if (lhs_const) {
                         emit_load_float_to_xmm(out, XMMREGS[0], *lhs_const);
                     } else {
-                        L(out, "movq %s, qword %s", XMMREGS[0], mem(slot_of(&slotmap, i->blhs), buf));
+                        if (is_f32_op) {
+                            L(out, "movd %s, dword %s", XMMREGS[0], mem(slot_of(&slotmap, i->blhs), buf));
+                        } else if (lhs_bytes == 4) {
+                            L(out, "movd %s, dword %s", XMMREGS[0], mem(slot_of(&slotmap, i->blhs), buf));
+                            L(out, "cvtss2sd %s, %s", XMMREGS[0], XMMREGS[0]);
+                        } else {
+                            L(out, "movq %s, qword %s", XMMREGS[0], mem(slot_of(&slotmap, i->blhs), buf));
+                        }
                     }
 
                     long long* rhs_const = ht_find(&slotmap.const_vals, i->brhs);
                     if (rhs_const) {
                         emit_load_float_to_xmm(out, XMMREGS[1], *rhs_const);
                     } else {
-                        L(out, "movq %s, qword %s", XMMREGS[1], mem(slot_of(&slotmap, i->brhs), buf2));
+                        if (is_f32_op) {
+                            L(out, "movd %s, dword %s", XMMREGS[1], mem(slot_of(&slotmap, i->brhs), buf2));
+                        } else if (rhs_bytes == 4) {
+                            L(out, "movd %s, dword %s", XMMREGS[1], mem(slot_of(&slotmap, i->brhs), buf2));
+                            L(out, "cvtss2sd %s, %s", XMMREGS[1], XMMREGS[1]);
+                        } else {
+                            L(out, "movq %s, qword %s", XMMREGS[1], mem(slot_of(&slotmap, i->brhs), buf2));
+                        }
                     }
 
                     switch (i->bop) {
                         case OP_ADD:
-                            L(out, "addsd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, is_f32_op ? "addss %s, %s" : "addsd %s, %s", XMMREGS[0], XMMREGS[1]);
                             break;
                         case OP_SUB:
-                            L(out, "subsd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, is_f32_op ? "subss %s, %s" : "subsd %s, %s", XMMREGS[0], XMMREGS[1]);
                             break;
                         case OP_MUL:
-                            L(out, "mulsd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, is_f32_op ? "mulss %s, %s" : "mulsd %s, %s", XMMREGS[0], XMMREGS[1]);
                             break;
                         case OP_DIV:
-                            L(out, "divsd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, is_f32_op ? "divss %s, %s" : "divsd %s, %s", XMMREGS[0], XMMREGS[1]);
                             break;
                         case OP_EQ:
-                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, is_f32_op ? "comiss %s, %s" : "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
                             L(out, "sete al");
                             L(out, "movzx %s, al", "rax");
                             break;
                         case OP_NEQ:
-                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, is_f32_op ? "comiss %s, %s" : "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
                             L(out, "setne al");
                             L(out, "movzx %s, al", "rax");
                             break;
                         case OP_LESS:
-                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, is_f32_op ? "comiss %s, %s" : "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
                             L(out, "setb al");
                             L(out, "movzx %s, al", "rax");
                             break;
                         case OP_LESSEQ:
-                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, is_f32_op ? "comiss %s, %s" : "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
                             L(out, "setbe al");
                             L(out, "movzx %s, al", "rax");
                             break;
                         case OP_MORE:
-                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, is_f32_op ? "comiss %s, %s" : "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
                             L(out, "seta al");
                             L(out, "movzx %s, al", "rax");
                             break;
                         case OP_MOREEQ:
-                            L(out, "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
+                            L(out, is_f32_op ? "comiss %s, %s" : "comisd %s, %s", XMMREGS[0], XMMREGS[1]);
                             L(out, "setae al");
                             L(out, "movzx %s, al", "rax");
                             break;
@@ -670,7 +698,14 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
 
                     if (i->bop != OP_EQ && i->bop != OP_NEQ && i->bop != OP_LESS && i->bop != OP_LESSEQ &&
                         i->bop != OP_MORE && i->bop != OP_MOREEQ) {
-                        L(out, "movq %s, %s", "rax", XMMREGS[0]);
+                        if (is_f32_op) {
+                            L(out, "movd %s, %s", "eax", XMMREGS[0]);
+                        } else if (lhs_bytes == 4) {
+                            L(out, "cvtsd2ss %s, %s", XMMREGS[0], XMMREGS[0]);
+                            L(out, "movd %s, %s", "eax", XMMREGS[0]);
+                        } else {
+                            L(out, "movq %s, %s", "rax", XMMREGS[0]);
+                        }
                     }
                 } else {
                     emit_load_or_const_to(
@@ -830,7 +865,15 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 if (i->src != IR_NO_VAL) {
                     Type* return_type = f->ret_type;
                     if (return_type && return_type->kind == TYPE_FLOAT) {
-                        L(out, "movq xmm0, qword %s", mem(slot_of(&slotmap, i->src), buf));
+                        int        ret_bytes = type_bytes(return_type);
+                        long long* const_val = ht_find(&slotmap.const_vals, i->src);
+                        if (const_val) {
+                            emit_load_float_to_xmm(out, "xmm0", *const_val);
+                        } else if (ret_bytes == 4) {
+                            L(out, "movd xmm0, dword %s", mem(slot_of(&slotmap, i->src), buf));
+                        } else {
+                            L(out, "movq xmm0, qword %s", mem(slot_of(&slotmap, i->src), buf));
+                        }
                     } else if (return_type) {
                         int  ret_bytes  = type_bytes(return_type);
                         bool ret_signed = type_is_signed(return_type);
@@ -1079,13 +1122,26 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 int src_slot = slot_of(&slotmap, i->cast_src);
                 int dst_slot = slot_of(&slotmap, i->dst);
 
+                long long* src_const = ht_find(&slotmap.const_vals, i->cast_src);
+
                 if (src_is_float && dst_is_float) {
                     if (src_bytes == 4 && dst_bytes == 8) {
-                        L(out, "movss xmm0, dword %s", mem(src_slot, buf));
-                        L(out, "cvtss2sd xmm0, xmm0");
-                        L(out, "movq rax, xmm0");
+                        if (src_const) {
+                            emit_load_float_to_xmm(out, "xmm0", *src_const);
+                            L(out, "cvtss2sd xmm0, xmm0");
+                            L(out, "movq rax, xmm0");
+                        } else {
+                            L(out, "movss xmm0, dword %s", mem(src_slot, buf));
+                            L(out, "cvtss2sd xmm0, xmm0");
+                            L(out, "movq rax, xmm0");
+                        }
                     } else if (src_bytes == 8 && dst_bytes == 4) {
-                        L(out, "movsd xmm0, qword %s", mem(src_slot, buf));
+                        if (src_const) {
+                            L(out, "mov rax, %lld", *src_const);
+                            L(out, "movq xmm0, rax");
+                        } else {
+                            L(out, "movsd xmm0, qword %s", mem(src_slot, buf));
+                        }
                         L(out, "cvtsd2ss xmm0, xmm0");
                         L(out, "movd eax, xmm0");
                     } else if (src_bytes == dst_bytes) {
@@ -1095,7 +1151,12 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     }
                     emit_store_slot(out, dst_bytes, mem(dst_slot, buf2));
                 } else if (src_is_float && !dst_is_float) {
-                    L(out, "movq xmm0, qword %s", mem(src_slot, buf));
+                    if (src_const) {
+                        L(out, "mov rax, %lld", *src_const);
+                        L(out, "movq xmm0, rax");
+                    } else {
+                        L(out, "movq xmm0, qword %s", mem(src_slot, buf));
+                    }
                     L(out, "cvttsd2si rax, xmm0");
                     emit_store_slot(out, dst_bytes, mem(dst_slot, buf2));
                 } else if (!src_is_float && dst_is_float) {
@@ -1223,9 +1284,10 @@ void codegen_x86_64_linux(IrModule* m, FILE* out) {
 
     for (int fi = 0; fi < m->count; fi++) {
         IrFunc* f = m->funcs[fi];
-        if (f->is_extern)
-            fprintf(out, "extrn %s\n", f->name);
-        else if (f->is_public)
+        if (f->is_extern) {
+            const char* extern_name = f->link_name ? f->link_name : f->name;
+            fprintf(out, "extrn %s\n", extern_name);
+        } else if (f->is_public)
             fprintf(out, "public %s\n", symmap_lookup(&sm, f->name));
     }
     if (has_main)

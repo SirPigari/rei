@@ -59,6 +59,7 @@ Type* type_never(void);
 Type* type_ptr(Type* elem, bool is_fat, bool non_null);
 Type* type_array(Type* elem, size_t len);
 Type* type_abstract_int(void);
+Type* type_abstract_float(void);
 Type* type_ident(const char* name);
 
 typedef enum {
@@ -146,19 +147,34 @@ typedef enum {
 
 /* builtin => no target, annot => whatever is after it is the target */
 typedef enum {
-    BUILTIN_SIZEOF,
-    BUILTIN_ALIGNOF,
-    BUILTIN_OFFSETOF,
+    BUILTIN_SIZEOF,      /* #sizeof(T) || #sizeof(expr) */
+    BUILTIN_ALIGNOF,     /* #alignof(T) || #alignof(expr) */
+    BUILTIN_OFFSETOF,    /* #offsetof(T, member) */
 
-    ANNOT_NO_MANGLE,
-    ANNOT_PRINTF_LIKE,
-    ANNOT_SCANF_LIKE,
-    ANNOT_STRFTIME_LIKE,
-    ANNOT_DEPRECATED,
-    ANNOT_INLINE,
-    ANNOT_SENTINEL,
-    ANNOT_LINK_NAME,
+    ANNOT_NO_MANGLE,     /* #no_mangle <func decl> */
+    ANNOT_PRINTF_LIKE,   /* #printf_like(fmt) || #printf_like("fmt") || #printf_like(0) */
+    ANNOT_SCANF_LIKE,    /* #scanf_like(fmt) || #scanf_like("fmt") || #scanf_like(0) */
+    ANNOT_STRFTIME_LIKE, /* #strftime_like(fmt) || #strftime_like("fmt") || #strftime_like(0) */
+    ANNOT_DEPRECATED,    /* #deprecated <func decl> || #deprecated("message") <func decl> */
+    ANNOT_INLINE,        /* #inline <func decl> || #inline(never) <func decl> || #inline(always) <func decl> */
+    ANNOT_SENTINEL,      /* #sentinel <func decl> || #sentinel(const value) <func decl> */
+    ANNOT_LINK_NAME,     /* #link_name(name) <func decl> || #link_name("name") <func decl> */
 } AnnotationType;
+
+typedef enum {
+    FUNC_FLAG_EXTERN        = 1 << 0,
+    FUNC_FLAG_VARIADIC      = 1 << 1,
+    FUNC_FLAG_PRINTF_LIKE   = 1 << 2,
+    FUNC_FLAG_SCANF_LIKE    = 1 << 3,
+    FUNC_FLAG_STRFTIME_LIKE = 1 << 4,
+    FUNC_FLAG_NO_MANGLE     = 1 << 5,
+    FUNC_FLAG_DEPRECATED    = 1 << 6,
+    FUNC_FLAG_SENTINEL      = 1 << 7,
+    FUNC_FLAG_LINK_NAME     = 1 << 8,
+} FuncFlags;
+
+#define FUNC_IS_FLAG(fn, flag)  ((fn)->flags & (flag))
+#define FUNC_SET_FLAG(fn, flag) ((fn)->flags |= (flag))
 
 typedef struct AstNode AstNode;
 
@@ -180,11 +196,13 @@ struct AstNode {
             Param*   params;
             int      param_count;
             Type*    ret_type;
-            AstNode* body; /* NULL = decl */
-            unsigned is_extern      : 1;
-            unsigned is_variadic    : 1;
-            unsigned is_printf_like : 1;
-            int      param_idx; /* for printf and others */
+            AstNode* body;           /* NULL = decl */
+            uint16_t flags;          /* FuncFlags */
+            uint8_t  inline_hint;    /* 0=none/hint, 1=never, 2=always */
+            int      param_idx;      /* for printf_like, scanf_like, strftime_like */
+            char*    deprecated_msg; /* NULL = no message */
+            char*    link_name_str;  /* NULL = not set */
+            AstNode* sentinel_value; /* sentinel value for #sentinel */
         };
 
         /* AST_VAR_DECL, AST_CONST_DECL */

@@ -50,6 +50,10 @@ static bool is_abstract_int(Type* t) {
     return t && t->kind == TYPE_INT && t->int_type.is_abstract;
 }
 
+static bool is_abstract_float(Type* t) {
+    return t && t->kind == TYPE_FLOAT && t->int_type.is_abstract;
+}
+
 static char* type_str(Type* t, char* buf, size_t cap) {
     if (!t) {
         snprintf(buf, cap, "?");
@@ -307,11 +311,74 @@ static bool types_assignable(Type* actual, Type* expected) {
     if (is_abstract_int(actual) && expected && expected->kind == TYPE_INT)
         return true;
 
+    if (is_abstract_float(actual) && expected && expected->kind == TYPE_FLOAT)
+        return true;
+
     if (actual && expected && actual->kind == TYPE_PTR && expected->kind == TYPE_PTR) {
         return types_ptr_compatible(actual, expected);
     }
 
     return false;
+}
+
+static Type* resolve_abstract_from_printf_spec(Type* t, char spec, char length_mod) {
+    if (!t)
+        return t;
+    
+    if (t->kind == TYPE_INT && t->int_type.is_abstract) {
+        switch (spec) {
+            case 'd':
+            case 'i':
+                switch (length_mod) {
+                    case 'h':
+                        return type_number(TYPE_INT, 16, 0);
+                    case 'l':
+                        return type_number(TYPE_INT, 64, 0);
+                    case 'z':
+                        return type_number_with_flag(TYPE_INT, 64, 0, false, true);
+                    default:
+                        return type_number(TYPE_INT, 32, 0);
+                }
+                break;
+            case 'u':
+            case 'o':
+            case 'x':
+            case 'X':
+                switch (length_mod) {
+                    case 'h':
+                        return type_number(TYPE_INT, 16, 1);
+                    case 'l':
+                        return type_number(TYPE_INT, 64, 1);
+                    case 'z':
+                        return type_number_with_flag(TYPE_INT, 64, 1, false, true);
+                    default:
+                        return type_number(TYPE_INT, 32, 1);
+                }
+                break;
+        }
+    }
+    
+    if (t->kind == TYPE_FLOAT && t->int_type.is_abstract) {
+        switch (spec) {
+            case 'f':
+            case 'F':
+            case 'e':
+            case 'E':
+            case 'g':
+            case 'G':
+                switch (length_mod) {
+                    case 'l':
+                        return type_number(TYPE_FLOAT, 64, 0);
+                    case 'L':
+                        return type_number(TYPE_FLOAT, 80, 0);
+                    default:
+                        return type_number(TYPE_FLOAT, 64, 0);
+                }
+                break;
+        }
+    }
+    
+    return t;
 }
 
 static bool type_matches_printf_spec(Type* t, char spec, char length_mod) {
@@ -372,13 +439,15 @@ static bool type_matches_printf_spec(Type* t, char spec, char length_mod) {
         case 'G':
             if (t->kind != TYPE_FLOAT)
                 return false;
+            if (t->int_type.is_abstract)
+                return true;
             switch (length_mod) {
                 case 'l':
                     return t->bits == 64; /* double */
                 case 'L':
                     return t->bits == 80; /* long double */
                 default:
-                    return t->bits == 32; /* float */
+                    return t->bits == 32 || t->bits == 64;
             }
             break;
 
@@ -494,6 +563,20 @@ static bool check_printf_format(
             }
 
             Type* arg_type = variadic_args[arg_idx]->type;
+            
+            Type* resolved_type = resolve_abstract_from_printf_spec(arg_type, spec, length_mod);
+            if (resolved_type != arg_type) {
+                variadic_args[arg_idx]->type = resolved_type;
+                arg_type = resolved_type;
+            }
+            
+            if ((spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G') && 
+                !length_mod && arg_type && arg_type->kind == TYPE_FLOAT && arg_type->bits == 32) {
+                Type* f64_type = type_number(TYPE_FLOAT, 64, 0);
+                variadic_args[arg_idx]->type = f64_type;
+                arg_type = f64_type;
+            }
+            
             if (!type_matches_printf_spec(arg_type, spec, length_mod)) {
                 char        ts[64];
                 const char* expected = "unknown";
@@ -748,7 +831,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 if (hint && hint->kind == TYPE_FLOAT)
                     e->type = hint;
                 else
-                    e->type = type_number(TYPE_FLOAT, 64, 0);
+                    e->type = type_abstract_float();
             }
             return e->type;
 
@@ -854,7 +937,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
             AstNode* fn = sym->decl;
 
             int variadic_index = -1;
-            if (fn->param_count > 0 && fn->is_variadic) {
+            if (fn->param_count > 0 && FUNC_IS_FLAG(fn, FUNC_FLAG_VARIADIC)) {
                 variadic_index = fn->param_count - 1;
             }
 
@@ -959,7 +1042,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 }
             }
 
-            if (fn->is_printf_like && fn->param_idx >= 0 && fn->param_idx < e->arg_count) {
+            if (FUNC_IS_FLAG(fn, FUNC_FLAG_PRINTF_LIKE) && fn->param_idx >= 0 && fn->param_idx < e->arg_count) {
                 AstNode* fmt_arg = e->args[fn->param_idx];
                 if (fmt_arg->kind == AST_STRING_LIT) {
                     int variadic_start = variadic_index;
@@ -969,6 +1052,25 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     int variadic_arg_count = e->arg_count - variadic_start;
                     check_printf_format(
                         fmt_arg->str, fmt_arg->len, &e->args[variadic_start], variadic_arg_count, e->loc
+                    );
+                }
+            }
+
+            if (FUNC_IS_FLAG(fn, FUNC_FLAG_DEPRECATED)) {
+                if (fn->deprecated_msg) {
+                    diag_emit(
+                        DIAG_WARN,
+                        e->loc,
+                        "function '%s' is deprecated: %s",
+                        fn->function_name,
+                        fn->deprecated_msg
+                    );
+                } else {
+                    diag_emit(
+                        DIAG_WARN,
+                        e->loc,
+                        "function '%s' is deprecated",
+                        fn->function_name
                     );
                 }
             }
@@ -1221,6 +1323,10 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     e->type = type_abstract_int();
                 } else if (is_abstract_int(lt)) {
                     e->type = rt;
+                } else if (is_abstract_float(lt) && is_abstract_float(rt)) {
+                    e->type = type_abstract_float();
+                } else if (is_abstract_float(lt)) {
+                    e->type = rt;
                 } else {
                     e->type = lt;
                 }
@@ -1418,7 +1524,8 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
             if (start_type && end_type) {
                 if (!types_equal(start_type, end_type)) {
-                    if (!is_abstract_int(start_type) && !is_abstract_int(end_type)) {
+                    if (!is_abstract_int(start_type) && !is_abstract_int(end_type) &&
+                        !is_abstract_float(start_type) && !is_abstract_float(end_type)) {
                         char st[64], et[64];
                         diag_emit(
                             DIAG_ERROR,
@@ -1978,16 +2085,16 @@ static bool validate_variadic_params(AstNode* func_decl) {
     if (!func_decl || (func_decl->kind != AST_FUNC_DECL && func_decl->kind != AST_EXTERN_DECL))
         return true;
 
-    if (func_decl->is_variadic && func_decl->param_count > 0) {
+    if (FUNC_IS_FLAG(func_decl, FUNC_FLAG_VARIADIC) && func_decl->param_count > 0) {
         Param* var_param = &func_decl->params[func_decl->param_count - 1];
         if (var_param->name != NULL) {
             Type* var_type = var_param->type;
-            if (!var_type || var_type->kind != TYPE_ARRAY) {
+            if (!var_type || var_type->kind != TYPE_PTR) {
                 char ts[64];
                 diag_emit(
                     DIAG_ERROR,
                     var_param->loc,
-                    "variadic parameter must have array type, got %s",
+                    "variadic parameter must have pointer type, got %s",
                     type_str(var_type, ts, sizeof(ts))
                 );
                 return false;
@@ -2033,7 +2140,7 @@ static bool validate_default_args(AstNode* func_decl) {
     if (!func_decl || (func_decl->kind != AST_FUNC_DECL && func_decl->kind != AST_EXTERN_DECL))
         return true;
 
-    if (func_decl->is_variadic) {
+    if (FUNC_IS_FLAG(func_decl, FUNC_FLAG_VARIADIC)) {
         for (int i = 0; i < func_decl->param_count; i++) {
             if (func_decl->params[i].default_value) {
                 diag_emit(DIAG_ERROR, func_decl->params[i].loc, "variadic functions cannot have default arguments");
@@ -2211,22 +2318,362 @@ static bool check_annotation(AstNode* annot, AstNode* target) {
                 return false;
             }
 
-            if (!target->is_variadic) {
+            if (!FUNC_IS_FLAG(target, FUNC_FLAG_VARIADIC)) {
                 diag_emit(
                     DIAG_ERROR, annot->loc, "printf_like cannot be used on functions without variadic parameters"
                 );
                 return false;
             }
 
-            target->is_printf_like = 1;
-            target->param_idx      = fmt_param_idx;
+            FUNC_SET_FLAG(target, FUNC_FLAG_PRINTF_LIKE);
+            target->param_idx = fmt_param_idx;
 
             return true;
         }
 
-        default:
-            ICE("TODO: handle other annotation types");
-            return false;
+        case ANNOT_SCANF_LIKE: {
+            if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "scanf_like annotation can only be applied to function or extern declarations"
+                );
+                return false;
+            }
+
+            if (annot->annot_arg_parse_failed) {
+                diag_emit(DIAG_ERROR, annot->loc, "scanf_like annotation has invalid arguments");
+                return false;
+            }
+
+            if (annot->annot_expr_count != 1) {
+                diag_emit(DIAG_ERROR, annot->loc, "scanf_like requires exactly one argument");
+                diag_emit(
+                    DIAG_NOTE,
+                    annot->loc,
+                    "use an identifier, string literal, or index: #scanf_like(fmt), #scanf_like(\"fmt\"), or "
+                    "#scanf_like(0)"
+                );
+                return false;
+            }
+
+            AstNode* arg           = annot->annot_exprs[0];
+            int      fmt_param_idx = -1;
+
+            if (arg->kind == AST_IDENT) {
+                for (int i = 0; i < target->param_count; i++) {
+                    if (target->params[i].name && strcmp(target->params[i].name, arg->ident) == 0) {
+                        fmt_param_idx = i;
+                        break;
+                    }
+                }
+                if (fmt_param_idx == -1) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        arg->loc,
+                        "scanf_like: parameter '%s' not found in function '%s'",
+                        arg->ident,
+                        target->function_name
+                    );
+                    return false;
+                }
+            } else if (arg->kind == AST_STRING_LIT) {
+                for (int i = 0; i < target->param_count; i++) {
+                    if (target->params[i].name && arg->len > 0 &&
+                        strncmp(target->params[i].name, arg->str, arg->len) == 0 &&
+                        target->params[i].name[arg->len] == '\0') {
+                        fmt_param_idx = i;
+                        break;
+                    }
+                }
+                if (fmt_param_idx == -1) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        arg->loc,
+                        "scanf_like: parameter '%.*s' not found in function '%s'",
+                        (int)arg->len,
+                        arg->str,
+                        target->function_name
+                    );
+                    return false;
+                }
+            } else if (arg->kind == AST_INT_LIT) {
+                fmt_param_idx = (int)arg->ival;
+                if (fmt_param_idx < 0 || fmt_param_idx >= target->param_count) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        arg->loc,
+                        "scanf_like: parameter index %d out of range (function has %d parameters)",
+                        fmt_param_idx,
+                        target->param_count
+                    );
+                    return false;
+                }
+            } else {
+                diag_emit(
+                    DIAG_ERROR, arg->loc, "scanf_like argument must be an identifier, string literal, or integer index"
+                );
+                return false;
+            }
+
+            Type* fmt_param_type = target->params[fmt_param_idx].type;
+            if (!is_thin_ptr_u8(fmt_param_type) && !is_fat_ptr_u8(fmt_param_type)) {
+                char ts[64];
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "scanf_like format parameter must be *u8 or []u8, got %s",
+                    type_str(fmt_param_type, ts, sizeof(ts))
+                );
+                return false;
+            }
+
+            if (!FUNC_IS_FLAG(target, FUNC_FLAG_VARIADIC)) {
+                diag_emit(
+                    DIAG_ERROR, annot->loc, "scanf_like cannot be used on functions without variadic parameters"
+                );
+                return false;
+            }
+
+            FUNC_SET_FLAG(target, FUNC_FLAG_SCANF_LIKE);
+            target->param_idx = fmt_param_idx;
+
+            return true;
+        }
+
+        case ANNOT_STRFTIME_LIKE: {
+            if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "strftime_like annotation can only be applied to function or extern declarations"
+                );
+                return false;
+            }
+
+            if (annot->annot_arg_parse_failed) {
+                diag_emit(DIAG_ERROR, annot->loc, "strftime_like annotation has invalid arguments");
+                return false;
+            }
+
+            if (annot->annot_expr_count != 1) {
+                diag_emit(DIAG_ERROR, annot->loc, "strftime_like requires exactly one argument");
+                diag_emit(
+                    DIAG_NOTE,
+                    annot->loc,
+                    "use an identifier, string literal, or index: #strftime_like(fmt), #strftime_like(\"fmt\"), or "
+                    "#strftime_like(0)"
+                );
+                return false;
+            }
+
+            AstNode* arg           = annot->annot_exprs[0];
+            int      fmt_param_idx = -1;
+
+            if (arg->kind == AST_IDENT) {
+                for (int i = 0; i < target->param_count; i++) {
+                    if (target->params[i].name && strcmp(target->params[i].name, arg->ident) == 0) {
+                        fmt_param_idx = i;
+                        break;
+                    }
+                }
+                if (fmt_param_idx == -1) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        arg->loc,
+                        "strftime_like: parameter '%s' not found in function '%s'",
+                        arg->ident,
+                        target->function_name
+                    );
+                    return false;
+                }
+            } else if (arg->kind == AST_STRING_LIT) {
+                for (int i = 0; i < target->param_count; i++) {
+                    if (target->params[i].name && arg->len > 0 &&
+                        strncmp(target->params[i].name, arg->str, arg->len) == 0 &&
+                        target->params[i].name[arg->len] == '\0') {
+                        fmt_param_idx = i;
+                        break;
+                    }
+                }
+                if (fmt_param_idx == -1) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        arg->loc,
+                        "strftime_like: parameter '%.*s' not found in function '%s'",
+                        (int)arg->len,
+                        arg->str,
+                        target->function_name
+                    );
+                    return false;
+                }
+            } else if (arg->kind == AST_INT_LIT) {
+                fmt_param_idx = (int)arg->ival;
+                if (fmt_param_idx < 0 || fmt_param_idx >= target->param_count) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        arg->loc,
+                        "strftime_like: parameter index %d out of range (function has %d parameters)",
+                        fmt_param_idx,
+                        target->param_count
+                    );
+                    return false;
+                }
+            } else {
+                diag_emit(
+                    DIAG_ERROR, arg->loc, "strftime_like argument must be an identifier, string literal, or integer index"
+                );
+                return false;
+            }
+
+            Type* fmt_param_type = target->params[fmt_param_idx].type;
+            if (!is_thin_ptr_u8(fmt_param_type) && !is_fat_ptr_u8(fmt_param_type)) {
+                char ts[64];
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "strftime_like format parameter must be *u8 or []u8, got %s",
+                    type_str(fmt_param_type, ts, sizeof(ts))
+                );
+                return false;
+            }
+
+            FUNC_SET_FLAG(target, FUNC_FLAG_STRFTIME_LIKE);
+            target->param_idx = fmt_param_idx;
+
+            return true;
+        }
+
+        case ANNOT_NO_MANGLE: {
+            if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "no_mangle annotation can only be applied to function or extern declarations"
+                );
+                return false;
+            }
+
+            FUNC_SET_FLAG(target, FUNC_FLAG_NO_MANGLE);
+            return true;
+        }
+
+        case ANNOT_DEPRECATED: {
+            if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "deprecated annotation can only be applied to function or extern declarations"
+                );
+                return false;
+            }
+
+            FUNC_SET_FLAG(target, FUNC_FLAG_DEPRECATED);
+
+            if (annot->annot_expr_count == 1 && annot->annot_exprs[0]->kind == AST_STRING_LIT) {
+                target->deprecated_msg = annot->annot_exprs[0]->str;
+            }
+
+            return true;
+        }
+
+        case ANNOT_INLINE: {
+            if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "inline annotation can only be applied to function or extern declarations"
+                );
+                return false;
+            }
+
+            target->inline_hint = 0;
+
+            if (annot->annot_expr_count == 1) {
+                AstNode* arg = annot->annot_exprs[0];
+                if (arg->kind == AST_IDENT) {
+                    if (strcmp(arg->ident, "never") == 0) {
+                        target->inline_hint = 1;
+                    } else if (strcmp(arg->ident, "always") == 0) {
+                        target->inline_hint = 2;
+                    } else {
+                        diag_emit(
+                            DIAG_ERROR,
+                            arg->loc,
+                            "inline hint must be 'never' or 'always', got '%s'",
+                            arg->ident
+                        );
+                        return false;
+                    }
+                } else {
+                    diag_emit(DIAG_ERROR, arg->loc, "inline hint must be an identifier");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        case ANNOT_SENTINEL: {
+            if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "sentinel annotation can only be applied to function or extern declarations"
+                );
+                return false;
+            }
+
+            if (!FUNC_IS_FLAG(target, FUNC_FLAG_VARIADIC)) {
+                diag_emit(
+                    DIAG_ERROR, annot->loc, "sentinel can only be used on functions with variadic parameters"
+                );
+                return false;
+            }
+
+            FUNC_SET_FLAG(target, FUNC_FLAG_SENTINEL);
+
+            if (annot->annot_expr_count == 1) {
+                AstNode* sentinel_expr = annot->annot_exprs[0];
+                if (!is_compile_time_expr(sentinel_expr)) {
+                    diag_emit(DIAG_ERROR, sentinel_expr->loc, "sentinel value must be a compile-time constant");
+                    return false;
+                }
+                target->sentinel_value = sentinel_expr;
+            }
+
+            return true;
+        }
+
+        case ANNOT_LINK_NAME: {
+            if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "link_name annotation can only be applied to function or extern declarations"
+                );
+                return false;
+            }
+
+            if (annot->annot_expr_count != 1) {
+                diag_emit(DIAG_ERROR, annot->loc, "link_name requires exactly one argument");
+                return false;
+            }
+
+            AstNode* arg = annot->annot_exprs[0];
+            if (arg->kind == AST_STRING_LIT) {
+                target->link_name_str = arg->str;
+                FUNC_SET_FLAG(target, FUNC_FLAG_LINK_NAME);
+            } else if (arg->kind == AST_IDENT) {
+                target->link_name_str = arg->ident;
+                FUNC_SET_FLAG(target, FUNC_FLAG_LINK_NAME);
+            } else {
+                diag_emit(DIAG_ERROR, arg->loc, "link_name argument must be a string literal or identifier");
+                return false;
+            }
+
+            return true;
+        }
     }
 }
 

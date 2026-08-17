@@ -704,16 +704,37 @@ static AstNode* parse_func_decl(Lexer* l, Token name_tok) {
 
     bool is_variadic = false;
     parse_params(l, &n->params, &n->param_count, &is_variadic);
-    n->is_variadic = is_variadic;
+    if (is_variadic) FUNC_SET_FLAG(n, FUNC_FLAG_VARIADIC);
 
     expect(l, TK_RPAREN);
-    expect(l, TK_ARROW);
 
-    n->ret_type = parse_type(l);
-
-    AstNode* body = parse_stmt(l);
-
-    n->body = body;
+    Token next = lexer_peek(l);
+    if (next.kind != TK_ARROW) {
+        if (next.kind == TK_LBRACE) {
+            diag_emit(DIAG_ERROR, next.loc, "function declaration missing return type (expected '->' before body)");
+            n->ret_type = type_void();
+            lexer_next(l);
+            int brace_depth = 1;
+            while (brace_depth > 0 && lexer_peek(l).kind != TK_EOF) {
+                if (lexer_peek(l).kind == TK_LBRACE) {
+                    brace_depth++;
+                } else if (lexer_peek(l).kind == TK_RBRACE) {
+                    brace_depth--;
+                }
+                lexer_next(l);
+            }
+            n->body = NULL;
+        } else {
+            diag_emit(DIAG_ERROR, next.loc, "expected '->', got %s", token_kind_str(next.kind));
+            n->ret_type = type_void();
+            n->body     = NULL;
+        }
+    } else {
+        lexer_next(l);
+        n->ret_type   = parse_type(l);
+        AstNode* body = parse_stmt(l);
+        n->body       = body;
+    }
 
     return n;
 }
@@ -724,12 +745,26 @@ static AstNode* parse_one_extern(Lexer* l) {
     expect(l, TK_LPAREN);
     AstNode* n       = ast_node(AST_EXTERN_DECL, loc);
     n->function_name = tok_str(name_tok);
+    FUNC_SET_FLAG(n, FUNC_FLAG_EXTERN);
     bool is_variadic = false;
     parse_params(l, &n->params, &n->param_count, &is_variadic);
-    n->is_variadic = is_variadic;
+    if (is_variadic) FUNC_SET_FLAG(n, FUNC_FLAG_VARIADIC);
     expect(l, TK_RPAREN);
-    expect(l, TK_ARROW);
-    n->ret_type = parse_type(l);
+
+    Token next = lexer_peek(l);
+    if (next.kind != TK_ARROW) {
+        if (next.kind == TK_LBRACE) {
+            diag_emit(DIAG_ERROR, next.loc, "extern declaration missing return type (expected '->' before body)");
+        } else {
+            diag_emit(DIAG_ERROR, next.loc, "expected '->', got %s", token_kind_str(next.kind));
+        }
+        n->ret_type = type_void();
+        lexer_next(l);
+    } else {
+        lexer_next(l);
+        n->ret_type = parse_type(l);
+    }
+
     return n;
 }
 
@@ -919,11 +954,42 @@ Module* parse(Lexer* l) {
                     expect(l, TK_LPAREN);
                     bool is_variadic = false;
                     parse_params(l, &decl->params, &decl->param_count, &is_variadic);
-                    decl->is_variadic = is_variadic;
+                    if (is_variadic) FUNC_SET_FLAG(decl, FUNC_FLAG_VARIADIC);
                     expect(l, TK_RPAREN);
-                    expect(l, TK_ARROW);
-                    decl->ret_type = parse_type(l);
-                    decl->body     = parse_stmt(l);
+
+                    Token arrow_check = lexer_peek(l);
+                    if (arrow_check.kind != TK_ARROW) {
+                        if (arrow_check.kind == TK_LBRACE) {
+                            diag_emit(
+                                DIAG_ERROR,
+                                arrow_check.loc,
+                                "function declaration missing return type (expected '->' before body)"
+                            );
+                        } else {
+                            diag_emit(
+                                DIAG_ERROR, arrow_check.loc, "expected '->', got %s", token_kind_str(arrow_check.kind)
+                            );
+                        }
+                        decl->ret_type = type_void();
+
+                        if (arrow_check.kind == TK_LBRACE) {
+                            lexer_next(l);
+                            int brace_depth = 1;
+                            while (brace_depth > 0 && lexer_peek(l).kind != TK_EOF) {
+                                if (lexer_peek(l).kind == TK_LBRACE) {
+                                    brace_depth++;
+                                } else if (lexer_peek(l).kind == TK_RBRACE) {
+                                    brace_depth--;
+                                }
+                                lexer_next(l);
+                            }
+                        }
+                        decl->body = NULL;
+                    } else {
+                        lexer_next(l);
+                        decl->ret_type = parse_type(l);
+                        decl->body     = parse_stmt(l);
+                    }
 
                     PUSH_DECL(decl);
                     continue;

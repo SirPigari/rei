@@ -32,6 +32,14 @@ Type* type_abstract_int(void) {
     return t;
 }
 
+Type* type_abstract_float(void) {
+    Type* t                 = calloc(1, sizeof(*t));
+    t->kind                 = TYPE_FLOAT;
+    t->bits                 = 0;
+    t->int_type.is_abstract = true;
+    return t;
+}
+
 Type* type_void(void) {
     Type* t = calloc(1, sizeof(*t));
     t->kind = TYPE_VOID;
@@ -128,7 +136,11 @@ int type_bytes(Type* t) {
     switch (t->kind) {
         case TYPE_INT:
         case TYPE_FLOAT:
-            return t->bits ? (t->bits / 8) : 8;
+            if (t->bits) {
+                return t->bits / 8;
+            } else {
+                return t->kind == TYPE_FLOAT ? 4 : 8;
+            }
         case TYPE_PTR:
             return t->ptr_type.is_fat ? 16 : 8;
         case TYPE_ARRAY:
@@ -436,7 +448,7 @@ void ast_dump(Module* m) {
                         printf("%s: ", d->params[p].name);
                     if (d->params[p].type)
                         print_type(d->params[p].type);
-                    if (d->is_variadic && p == d->param_count - 1)
+                    if (FUNC_IS_FLAG(d, FUNC_FLAG_VARIADIC) && p == d->param_count - 1)
                         printf(" ...");
                 }
                 printf(") -> ");
@@ -455,7 +467,7 @@ void ast_dump(Module* m) {
                         printf("%s: ", d->params[p].name);
                     if (d->params[p].type)
                         print_type(d->params[p].type);
-                    if (d->is_variadic && p == d->param_count - 1)
+                    if (FUNC_IS_FLAG(d, FUNC_FLAG_VARIADIC) && p == d->param_count - 1)
                         printf(" ...");
                 }
                 printf(") -> ");

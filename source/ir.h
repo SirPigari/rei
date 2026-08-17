@@ -96,6 +96,10 @@ typedef struct {
     bool     is_extern;
     bool     is_public;
     bool     no_mangle;
+    uint8_t  inline_hint;
+    char*    link_name;
+    bool     is_sentinel;
+    bool     is_deprecated;
 } IrFunc;
 
 typedef enum {

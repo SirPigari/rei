@@ -29,6 +29,13 @@ static IrInstr* emit(IrFunc* f) {
 }
 
 static int intern_string(IrModule* m, const char* data, size_t len, StrPrefixFlags flags) {
+    for (int i = 0; i < m->str_count; i++) {
+        if (m->strings[i].len == len && m->strings[i].str_flags == flags &&
+            memcmp(m->strings[i].data, data, len) == 0) {
+            return i;
+        }
+    }
+
     if (m->str_count >= m->str_cap) {
         m->str_cap = m->str_cap ? m->str_cap * 2 : 8;
         m->strings = realloc(m->strings, m->str_cap * sizeof(*m->strings));
@@ -395,7 +402,7 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
         }
         case AST_CALL: {
             int total_arg_count = e->arg_count;
-            if (e->func_decl != NULL && e->arg_count < e->func_decl->param_count && !e->func_decl->is_variadic) {
+            if (e->func_decl != NULL && e->arg_count < e->func_decl->param_count && !FUNC_IS_FLAG(e->func_decl, FUNC_FLAG_VARIADIC)) {
                 total_arg_count = e->func_decl->param_count;
             }
 
@@ -419,7 +426,7 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                     }
                 }
 
-                if (arg_type && arg_type->kind == TYPE_FLOAT && arg_type->bits == 32) {
+                if (arg_type && arg_type->kind == TYPE_FLOAT && (arg_type->bits == 32 || arg_type->int_type.is_abstract)) {
                     Type*    f64_type    = type_number(TYPE_FLOAT, 64, 0);
                     IrInstr* cast        = emit(f);
                     cast->op             = IR_CAST;
@@ -435,7 +442,7 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 arg_types[a] = arg_type;
             }
 
-            if (e->func_decl != NULL && e->arg_count < e->func_decl->param_count && !e->func_decl->is_variadic) {
+            if (e->func_decl != NULL && e->arg_count < e->func_decl->param_count && !FUNC_IS_FLAG(e->func_decl, FUNC_FLAG_VARIADIC)) {
                 for (int a = e->arg_count; a < e->func_decl->param_count; a++) {
                     AstNode* default_expr = e->func_decl->params[a].default_value;
                     if (default_expr == NULL) {
@@ -449,7 +456,7 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
 
                     Type* arg_type = default_expr->type;
 
-                    if (arg_type && arg_type->kind == TYPE_FLOAT && arg_type->bits == 32) {
+                    if (arg_type && arg_type->kind == TYPE_FLOAT && (arg_type->bits == 32 || arg_type->int_type.is_abstract)) {
                         Type*    f64_type    = type_number(TYPE_FLOAT, 64, 0);
                         IrInstr* cast        = emit(f);
                         cast->op             = IR_CAST;
@@ -464,6 +471,28 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                     arg_vals[a]  = v;
                     arg_types[a] = arg_type;
                 }
+            }
+
+            if (e->func_decl && FUNC_IS_FLAG(e->func_decl, FUNC_FLAG_SENTINEL) && e->func_decl->sentinel_value) {
+                if (total_arg_count > e->arg_count) {
+                    IrVal*  new_arg_vals  = malloc((total_arg_count + 1) * sizeof(IrVal));
+                    Type** new_arg_types = malloc((total_arg_count + 1) * sizeof(Type*));
+                    memcpy(new_arg_vals, arg_vals, total_arg_count * sizeof(IrVal));
+                    memcpy(new_arg_types, arg_types, total_arg_count * sizeof(Type*));
+                    free(arg_vals);
+                    free(arg_types);
+                    arg_vals = new_arg_vals;
+                    arg_types = new_arg_types;
+                    total_arg_count++;
+                } else {
+                    arg_vals = realloc(arg_vals, (total_arg_count + 1) * sizeof(IrVal));
+                    arg_types = realloc(arg_types, (total_arg_count + 1) * sizeof(Type*));
+                    total_arg_count++;
+                }
+                
+                IrVal sentinel_val = lower_expr(m, f, e->func_decl->sentinel_value, vars);
+                arg_vals[total_arg_count - 1] = sentinel_val;
+                arg_types[total_arg_count - 1] = e->func_decl->sentinel_value->type;
             }
 
             IrInstr* i        = emit(f);
@@ -1126,6 +1155,13 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                         default_step->type    = iter_type;
                         default_step->ival    = 1;
                         step_val              = default_step->dst;
+                    } else if (step_val == IR_NO_VAL && iter_type->kind == TYPE_FLOAT) {
+                        IrInstr* default_step = emit(f);
+                        default_step->op      = IR_CONST_FLOAT;
+                        default_step->dst     = next_val(f);
+                        default_step->type    = iter_type;
+                        default_step->fval    = 1.0;
+                        step_val              = default_step->dst;
                     }
 
                     if (s->for_val && s->for_val->kind == AST_IDENT) {
@@ -1150,10 +1186,15 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                         load_cond->load_ptr = loop_var_ptr;
 
                         IrInstr* zero_const = emit(f);
-                        zero_const->op      = IR_CONST_INT;
-                        zero_const->dst     = next_val(f);
-                        zero_const->type    = iter_type;
-                        zero_const->ival    = 0;
+                        if (iter_type->kind == TYPE_FLOAT) {
+                            zero_const->op   = IR_CONST_FLOAT;
+                            zero_const->fval = 0.0;
+                        } else {
+                            zero_const->op   = IR_CONST_INT;
+                            zero_const->ival = 0;
+                        }
+                        zero_const->dst  = next_val(f);
+                        zero_const->type = iter_type;
 
                         IrInstr* step_cmp  = emit(f);
                         step_cmp->op       = IR_BINOP;
@@ -1799,7 +1840,12 @@ IrModule* ir_lower(Module* ast) {
         f->params      = d->params;
         f->param_count = d->param_count;
         f->ret_type    = d->ret_type;
-        f->is_extern   = (d->kind == AST_EXTERN_DECL);
+        f->is_extern   = FUNC_IS_FLAG(d, FUNC_FLAG_EXTERN);
+        f->no_mangle   = FUNC_IS_FLAG(d, FUNC_FLAG_NO_MANGLE);
+        f->inline_hint = d->inline_hint;
+        f->link_name   = d->link_name_str;
+        f->is_sentinel = FUNC_IS_FLAG(d, FUNC_FLAG_SENTINEL);
+        f->is_deprecated = FUNC_IS_FLAG(d, FUNC_FLAG_DEPRECATED);
 
         if (!f->is_extern && d->body) {
             VarMap var_map = {.hasheq = ht_cstr_hasheq};
