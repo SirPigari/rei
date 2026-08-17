@@ -163,7 +163,7 @@ typedef enum {
 typedef struct AstNode AstNode;
 
 typedef struct {
-    char*    name; /* NULL = unnamed */
+    char*    name;          /* NULL = unnamed */
     Type*    type;
     AstNode* default_value; /* NULL = no default value */
     Location loc;
@@ -184,7 +184,7 @@ struct AstNode {
             unsigned is_extern      : 1;
             unsigned is_variadic    : 1;
             unsigned is_printf_like : 1;
-            int      param_idx;   /* for printf and others */
+            int      param_idx; /* for printf and others */
         };
 
         /* AST_VAR_DECL, AST_CONST_DECL */

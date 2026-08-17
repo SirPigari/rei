@@ -640,24 +640,24 @@ static void parse_params(Lexer* l, Param** out, int* count, bool* has_variadic) 
             if (lexer_peek(l).kind == TK_IDENT) {
                 Token name_tok = lexer_next(l);
                 expect(l, TK_COLON);
-                params[*count].name        = tok_str(name_tok);
-                params[*count].type        = parse_type(l);
-                params[*count].loc         = name_tok.loc;
+                params[*count].name          = tok_str(name_tok);
+                params[*count].type          = parse_type(l);
+                params[*count].loc           = name_tok.loc;
                 params[*count].default_value = NULL;
-                *has_variadic = true;
+                *has_variadic                = true;
             } else {
-                params[*count].name        = NULL;
-                params[*count].type        = NULL;
-                params[*count].loc         = loc;
+                params[*count].name          = NULL;
+                params[*count].type          = NULL;
+                params[*count].loc           = loc;
                 params[*count].default_value = NULL;
-                *has_variadic = true;
+                *has_variadic                = true;
             }
             (*count)++;
-            
+
             /* TODO: properly check for ) not just a comma since ...,) should be allowed */
             if (lexer_peek(l).kind == TK_COMMA) {
                 diag_emit(DIAG_ERROR, lexer_peek(l).loc, "variadic parameter must be the last parameter");
-                lexer_next(l); 
+                lexer_next(l);
             }
             break;
         } else if (first.kind == TK_DOTDOT) {
@@ -668,18 +668,18 @@ static void parse_params(Lexer* l, Param** out, int* count, bool* has_variadic) 
             lexer_next(l);
             if (lexer_peek(l).kind == TK_COLON) {
                 lexer_next(l);
-                params[*count].name        = tok_str(first);
-                params[*count].type        = parse_type(l);
+                params[*count].name = tok_str(first);
+                params[*count].type = parse_type(l);
             } else {
                 lexer_put_back(l, first);
-                params[*count].name        = NULL;
-                params[*count].type        = parse_type(l);
+                params[*count].name = NULL;
+                params[*count].type = parse_type(l);
             }
             params[*count].loc = first.loc;
         } else {
-            params[*count].name        = NULL;
-            params[*count].type        = parse_type(l);
-            params[*count].loc         = first.loc;
+            params[*count].name = NULL;
+            params[*count].type = parse_type(l);
+            params[*count].loc  = first.loc;
         }
 
         params[*count].default_value = NULL;

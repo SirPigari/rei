@@ -286,7 +286,7 @@ int main(int argc, char** argv) {
     if (semantic_check(module, &config) < 0)
         goto done;
 
-    IrModule* ir = ir_lower(module);
+    IrModule* ir      = ir_lower(module);
     ir->no_assertions = no_assertions; /* TODO: make nicer api */
 
     if (dump_ir) {

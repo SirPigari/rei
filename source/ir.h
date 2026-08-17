@@ -129,7 +129,7 @@ typedef struct {
     int          str_cap;
     MainFuncInfo rei_main;
     int          next_label;
-    bool no_assertions;
+    bool         no_assertions;
 } IrModule;
 
 IrModule* ir_lower(Module* ast);

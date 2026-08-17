@@ -15,14 +15,42 @@ static struct {
     bool has_used_assertion_null_ptr;
 } state = {0};
 
-#define REI_FUNC_PREFIX "rei__"
+#define REI_FUNC_PREFIX            "rei__"
 #define REI_ASSERTION_NULL_PTR_MSG "Rei: null pointer assertion"
 
-#define MAX_ARGREGS 6
-#define MAX_XMMREGS 8
+#define MAX_ARGREGS                6
+#define MAX_XMMREGS                8
+#define STACK_ALIGNMENT            16
+#define STACK_ALIGN_ADJUSTMENT     15
+#define MALLOC_ALIGNMENT_MASK      ~15
+#define REGISTER_SIZE              8
+#define FAT_PTR_SIZE               16
+#define SELECT_LABEL_BASE          0
+#define NULL_CHECK_LABEL_BASE      0
 
 static const char* ARGREGS[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
 static const char* XMMREGS[] = {"xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"};
+
+typedef struct {
+    const char* b8;
+    const char* b16;
+    const char* b32;
+    const char* b64;
+} RegisterVariants;
+
+static const RegisterVariants REGISTER_VARIANTS[] = {
+    {"al", "ax", "eax", "rax"},          /* rax */
+    {"cl", "cx", "ecx", "rcx"},          /* rcx */
+    {"r10b", "r10w", "r10d", "r10"},     /* r10 */
+    {"r11b", "r11w", "r11d", "r11"},     /* r11 */
+    {"dil", "di", "edi", "rdi"},         /* rdi */
+    {"sil", "si", "esi", "rsi"},         /* rsi */
+    {"dl", "dx", "edx", "rdx"},          /* rdx */
+    {"r8b", "r8w", "r8d", "r8"},         /* r8  */
+    {"r9b", "r9w", "r9d", "r9"},         /* r9  */
+};
+
+static const int REGISTER_VARIANTS_COUNT = sizeof(REGISTER_VARIANTS) / sizeof(REGISTER_VARIANTS[0]);
 
 typedef struct {
     int offset;
@@ -37,16 +65,21 @@ typedef struct {
     int stack_size;
 } SlotMap;
 
+static int align_stack_size(int stack_size) {
+    return ((stack_size + 8) + STACK_ALIGN_ADJUSTMENT) & MALLOC_ALIGNMENT_MASK;
+}
+
 static int slot_of(SlotMap* sm, IrVal v) {
     int* offset = ht_find(&sm->offsets, v);
     return offset ? *offset : 0;
 }
 
-static void alloc_slot(SlotMap* sm, IrVal v, int size) {
+static int alloc_slot(SlotMap* sm, IrVal v, int size) {
     int aligned_size = (size + 7) & ~7;
     sm->stack_size += aligned_size;
     int* offset_ptr = ht_find_or_put(&sm->offsets, v);
     *offset_ptr     = -(int)sm->stack_size;
+    return -(int)sm->stack_size;
 }
 
 static void mark_alloca(SlotMap* sm, IrVal v) {
@@ -69,6 +102,18 @@ static void L(FILE* out, const char* fmt, ...) {
     vfprintf(out, fmt, ap);
     va_end(ap);
     fputc('\n', out);
+}
+
+static void emit_load_float_to_xmm(FILE* out, const char* xmm_reg, long long const_val) {
+    int lo = (int)(const_val & 0xFFFFFFFF);
+    int hi = (int)((const_val >> 32) & 0xFFFFFFFF);
+    L(out, "mov eax, %d", lo);
+    if (hi != 0) {
+        L(out, "mov edx, %d", hi);
+        L(out, "shl rdx, 32");
+        L(out, "or rax, rdx");
+    }
+    L(out, "movq %s, rax", xmm_reg);
 }
 
 static const char* mem(int offset, char* buf) {
@@ -125,142 +170,64 @@ static const char* size_kw(int bytes) {
             return "?";
     }
 }
-static const char* reg_a(int bytes) {
-    switch (bytes) {
-        case 1:
-            return "al";
-        case 2:
-            return "ax";
-        case 4:
-            return "eax";
-        case 8:
-            return "rax";
-        default:
-            ICE("unsupported register size: %d bytes", bytes);
-            return "?";
+
+static const struct {
+    const char* name;
+    int         idx;
+} REGISTER_LOOKUP[] = {
+    {"rax", 0}, {"rcx", 1}, {"r10", 2}, {"r11", 3},
+    {"rdi", 4}, {"rsi", 5}, {"rdx", 6}, {"r8", 7},
+    {"r9", 8},  {NULL, -1}
+};
+
+static int register_index_for_name(const char* base_reg) {
+    for (int i = 0; REGISTER_LOOKUP[i].name; i++) {
+        if (strcmp(base_reg, REGISTER_LOOKUP[i].name) == 0)
+            return REGISTER_LOOKUP[i].idx;
     }
+    return -1;
 }
 
 static const char* reg_for_bytes(const char* base_reg, int bytes) {
-    if (strcmp(base_reg, "rax") == 0)
-        return reg_a(bytes);
-    if (strcmp(base_reg, "rcx") == 0) {
-        switch (bytes) {
-            case 1:
-                return "cl";
-            case 2:
-                return "cx";
-            case 4:
-                return "ecx";
-            case 8:
-                return "rcx";
-        }
+    int idx = register_index_for_name(base_reg);
+    if (idx < 0 || idx >= REGISTER_VARIANTS_COUNT) {
+        ICE("unknown register: %s", base_reg);
+        return base_reg;
     }
-    if (strcmp(base_reg, "r10") == 0) {
-        switch (bytes) {
-            case 1:
-                return "r10b";
-            case 2:
-                return "r10w";
-            case 4:
-                return "r10d";
-            case 8:
-                return "r10";
-        }
+    
+    const RegisterVariants* rv = &REGISTER_VARIANTS[idx];
+    switch (bytes) {
+        case 1: return rv->b8;
+        case 2: return rv->b16;
+        case 4: return rv->b32;
+        case 8: return rv->b64;
+        default:
+            ICE("unsupported register size: %d bytes", bytes);
+            return base_reg;
     }
-    if (strcmp(base_reg, "r11") == 0) {
-        switch (bytes) {
-            case 1:
-                return "r11b";
-            case 2:
-                return "r11w";
-            case 4:
-                return "r11d";
-            case 8:
-                return "r11";
-        }
-    }
-    if (strcmp(base_reg, "rdi") == 0) {
-        switch (bytes) {
-            case 1:
-                return "dil";
-            case 2:
-                return "di";
-            case 4:
-                return "edi";
-            case 8:
-                return "rdi";
-        }
-    }
-    if (strcmp(base_reg, "rsi") == 0) {
-        switch (bytes) {
-            case 1:
-                return "sil";
-            case 2:
-                return "si";
-            case 4:
-                return "esi";
-            case 8:
-                return "rsi";
-        }
-    }
-    if (strcmp(base_reg, "rdx") == 0) {
-        switch (bytes) {
-            case 1:
-                return "dl";
-            case 2:
-                return "dx";
-            case 4:
-                return "edx";
-            case 8:
-                return "rdx";
-        }
-    }
-    if (strcmp(base_reg, "r8") == 0) {
-        switch (bytes) {
-            case 1:
-                return "r8b";
-            case 2:
-                return "r8w";
-            case 4:
-                return "r8d";
-            case 8:
-                return "r8";
-        }
-    }
-    if (strcmp(base_reg, "r9") == 0) {
-        switch (bytes) {
-            case 1:
-                return "r9b";
-            case 2:
-                return "r9w";
-            case 4:
-                return "r9d";
-            case 8:
-                return "r9";
-        }
-    }
-    return base_reg;
 }
 
 static void emit_load_slot_to(FILE* out, const char* reg, int bytes, bool is_signed, const char* mem_expr) {
     const char* target = reg_for_bytes(reg, bytes);
-    if (bytes == 8) {
-        L(out, "mov %s, qword %s", target, mem_expr);
-    } else if (bytes == 4) {
-        if (is_signed) {
-            L(out, "movsxd %s, dword %s", reg, mem_expr);
-        } else {
-            L(out, "mov %s, dword %s", target, mem_expr);
-        }
-    } else if (bytes == 2) {
-        const char* dest = reg_for_bytes(reg, 2);
-        L(out, "%s %s, %s %s", is_signed ? "movsx" : "movzx", dest, size_kw(bytes), mem_expr);
-    } else if (bytes == 1) {
-        const char* dest = reg_for_bytes(reg, 2);
-        L(out, "%s %s, %s %s", is_signed ? "movsx" : "movzx", dest, size_kw(bytes), mem_expr);
-    } else {
-        ICE("unsupported load size: %d bytes", bytes);
+    const char* dest16 = reg_for_bytes(reg, 2);
+    
+    switch (bytes) {
+        case 8:
+            L(out, "mov %s, qword %s", target, mem_expr);
+            break;
+        case 4:
+            if (is_signed) {
+                L(out, "movsxd %s, dword %s", reg, mem_expr);
+            } else {
+                L(out, "mov %s, dword %s", target, mem_expr);
+            }
+            break;
+        case 2:
+        case 1:
+            L(out, "%s %s, %s %s", is_signed ? "movsx" : "movzx", dest16, size_kw(bytes), mem_expr);
+            break;
+        default:
+            ICE("unsupported load size: %d bytes", bytes);
     }
 }
 
@@ -277,26 +244,50 @@ static bool type_is_signed(Type* t) {
 static void emit_load_or_const(FILE* out, SlotMap* sm, IrVal v, int bytes, bool is_signed, const char* mem_expr) {
     long long* const_val = ht_find(&sm->const_vals, v);
     if (const_val) {
-        if (bytes == 8) {
-            L(out, "mov rax, %lld", *const_val);
-        } else if (bytes == 4) {
-            long long val_32 = *const_val & 0xFFFFFFFFLL;
-            if (val_32 > 0x7FFFFFFF) {
-                val_32 = (long long)(int)(*const_val);
+        switch (bytes) {
+            case 8:
+                if (*const_val == 0) {
+                    L(out, "xor rax, rax");
+                } else {
+                    L(out, "mov rax, %lld", *const_val);
+                }
+                break;
+            case 4: {
+                long long val_32 = *const_val & 0xFFFFFFFFLL;
+                if (val_32 > 0x7FFFFFFF) {
+                    val_32 = (long long)(int)(*const_val);
+                }
+                if (val_32 == 0) {
+                    L(out, "xor eax, eax");
+                } else {
+                    L(out, "mov eax, %lld", val_32);
+                }
+                break;
             }
-            L(out, "mov eax, %lld", val_32);
-        } else if (bytes == 2) {
-            long long val_16 = *const_val & 0xFFFFLL;
-            if (val_16 > 0x7FFF) {
-                val_16 = (long long)(short)(*const_val);
+            case 2: {
+                long long val_16 = *const_val & 0xFFFFLL;
+                if (val_16 > 0x7FFF) {
+                    val_16 = (long long)(short)(*const_val);
+                }
+                if (val_16 == 0) {
+                    L(out, "xor eax, eax");
+                } else {
+                    L(out, "mov eax, %lld", val_16);
+                }
+                break;
             }
-            L(out, "mov eax, %lld", val_16);
-        } else if (bytes == 1) {
-            long long val_8 = *const_val & 0xFFL;
-            if (val_8 > 0x7F) {
-                val_8 = (long long)(char)(*const_val);
+            case 1: {
+                long long val_8 = *const_val & 0xFFL;
+                if (val_8 > 0x7F) {
+                    val_8 = (long long)(char)(*const_val);
+                }
+                if (val_8 == 0) {
+                    L(out, "xor eax, eax");
+                } else {
+                    L(out, "mov eax, %lld", val_8);
+                }
+                break;
             }
-            L(out, "mov eax, %lld", val_8);
         }
     } else {
         emit_load_slot(out, bytes, is_signed, mem_expr);
@@ -316,7 +307,9 @@ static void emit_load_or_const_to(
     if (const_val) {
         const char* target = reg_for_bytes(reg, bytes);
         if (bytes == 8) {
-            if (*const_val >= (-1LL << 31) && *const_val <= (1LL << 31) - 1) {
+            if (*const_val == 0) {
+                L(out, "xor %s, %s", reg, reg);
+            } else if (*const_val >= (-1LL << 31) && *const_val <= (1LL << 31) - 1) {
                 const char* target_32 = reg_for_bytes(reg, 4);
                 L(out, "mov %s, %lld", target_32, *const_val);
             } else {
@@ -324,10 +317,13 @@ static void emit_load_or_const_to(
                 if (strcmp(reg, "rax") != 0)
                     L(out, "mov %s, rax", reg);
             }
-        } else if (bytes == 4) {
-            L(out, "mov %s, %lld", reg_for_bytes(reg, 4), *const_val);
         } else {
-            L(out, "mov %s, %lld", target, *const_val);
+            const char* dst = (bytes == 4) ? reg_for_bytes(reg, 4) : target;
+            if (*const_val == 0) {
+                L(out, "xor %s, %s", dst, dst);
+            } else {
+                L(out, "mov %s, %lld", dst, *const_val);
+            }
         }
     } else {
         Type* val_type_info = val_type(sm, v);
@@ -350,6 +346,7 @@ static void emit_store_slot(FILE* out, int bytes, const char* mem_expr) {
     emit_store_slot_from(out, bytes, mem_expr, "rax");
 }
 
+
 static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
     fprintf(out, "%s:\n", symmap_lookup(sm, f->name));
     L(out, "push %s", "rbp");
@@ -363,7 +360,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
 
         if (ins->dst != IR_NO_VAL) {
             if (ins->op == IR_ALLOCA || ins->op == IR_ARRAY_INIT) {
-                slotmap.stack_size += ins->alloca_slots * 8;
+                slotmap.stack_size += ins->alloca_slots * REGISTER_SIZE;
                 int* offset_ptr = ht_find_or_put(&slotmap.offsets, ins->dst);
                 *offset_ptr     = -(int)slotmap.stack_size;
                 mark_alloca(&slotmap, ins->dst);
@@ -388,9 +385,10 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             } else {
                 if (ht_find(&slotmap.offsets, ins->dst))
                     continue;
+                
                 int size = type_bytes(ins->type);
                 if (ins->type && ins->type->kind == TYPE_PTR && ins->type->ptr_type.is_fat) {
-                    size = 40;
+                    size = FAT_PTR_SIZE;
                 }
                 alloc_slot(&slotmap, ins->dst, size);
             }
@@ -398,7 +396,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
     }
 
     if (slotmap.stack_size) {
-        int sub_amount = ((slotmap.stack_size + 8) + 15) & ~15;
+        int sub_amount = align_stack_size(slotmap.stack_size);
         L(out, "sub rsp, %d", sub_amount);
     }
 
@@ -429,14 +427,14 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 if (i->type && i->type->kind == TYPE_PTR && i->type->ptr_type.is_fat) {
                     int slot_offset = slot_of(&slotmap, i->dst);
                     L(out, "mov rax, %s", ARGREGS[i->param_idx]);
-                    emit_store_slot(out, 8, mem(slot_offset, buf));
+                    emit_store_slot(out, REGISTER_SIZE, mem(slot_offset, buf));
                     L(out, "mov rax, %s", ARGREGS[i->param_idx + 1]);
-                    emit_store_slot(out, 8, mem(slot_offset - 8, buf));
+                    emit_store_slot(out, REGISTER_SIZE, mem(slot_offset - REGISTER_SIZE, buf));
                 } else if (i->param_idx < MAX_ARGREGS) {
                     L(out, "mov rax, %s", ARGREGS[i->param_idx]);
                     emit_store_slot(out, bytes, mem(slot_of(&slotmap, i->dst), buf));
                 } else {
-                    int stack_off = 16 + (i->param_idx - MAX_ARGREGS) * 8;
+                    int stack_off = 16 + (i->param_idx - MAX_ARGREGS) * REGISTER_SIZE;
                     L(out, "mov %s, qword [%s + %d]", "rax", "rbp", stack_off);
                     emit_store_slot(out, bytes, mem(slot_of(&slotmap, i->dst), buf));
                 }
@@ -448,83 +446,150 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 int reg_idx = 0;
                 int xmm_idx = 0;
 
+                int float_count = 0;
                 for (int a = 0; a < i->call.arg_count; a++) {
                     Type* arg_type = i->call.arg_types ? i->call.arg_types[a] : NULL;
                     if (arg_type && arg_type->kind == TYPE_FLOAT) {
-                        xmm_idx++;
+                        float_count++;
                     }
                 }
 
-                L(out, "xor eax, eax");
-                if (xmm_idx > 0) {
-                    L(out, "mov eax, %d", xmm_idx);
+                if (float_count > 0) {
+                    if (float_count <= 8) {
+                        L(out, "mov al, %d", float_count);
+                    } else {
+                        L(out, "mov eax, %d", float_count);
+                    }
                 }
-                xmm_idx = reg_idx = 0;
 
-                for (int a = 0; a < i->call.arg_count && (reg_idx < MAX_ARGREGS || xmm_idx < 8); a++) {
+                int stack_arg_count = 0;
+                reg_idx             = 0;
+                xmm_idx             = 0;
+                for (int a = 0; a < i->call.arg_count; a++) {
                     Type* arg_type = i->call.arg_types ? i->call.arg_types[a] : NULL;
 
                     if (arg_type && arg_type->kind == TYPE_PTR && arg_type->ptr_type.is_fat) {
+                        if (reg_idx + 1 >= MAX_ARGREGS) {
+                            stack_arg_count += 2;
+                        }
+                        reg_idx += 2;
+                    } else if (arg_type && arg_type->kind == TYPE_FLOAT) {
+                        if (xmm_idx >= MAX_XMMREGS) {
+                            stack_arg_count++;
+                        }
+                        xmm_idx++;
+                    } else {
+                        if (reg_idx >= MAX_ARGREGS) {
+                            stack_arg_count++;
+                        }
+                        reg_idx++;
+                    }
+                }
+
+                int stack_space = 0;
+                if (stack_arg_count > 0) {
+                    stack_space    = stack_arg_count * REGISTER_SIZE;
+                    int sub_amount = align_stack_size(stack_space);
+                    L(out, "sub rsp, %d", sub_amount);
+                }
+
+                reg_idx      = 0;
+                xmm_idx      = 0;
+                int stack_offset = stack_space;
+
+                for (int a = 0; a < i->call.arg_count; a++) {
+                    Type* arg_type = i->call.arg_types ? i->call.arg_types[a] : NULL;
+
+                    if (arg_type && arg_type->kind == TYPE_PTR && arg_type->ptr_type.is_fat) {
+                        int slot_offset = slot_of(&slotmap, i->call.args[a]);
                         if (reg_idx + 1 < MAX_ARGREGS) {
-                            int slot_offset = slot_of(&slotmap, i->call.args[a]);
                             L(out, "mov %s, qword %s", ARGREGS[reg_idx], mem(slot_offset, buf));
                             L(out, "mov %s, qword %s", ARGREGS[reg_idx + 1], mem(slot_offset - 8, buf2));
+                            reg_idx += 2;
+                        } else {
+                            L(out, "mov rax, qword %s", mem(slot_offset, buf));
+                            L(out, "mov qword [rsp + %d], rax", stack_offset - 8);
+                            L(out, "mov rcx, qword %s", mem(slot_offset - 8, buf2));
+                            L(out, "mov qword [rsp + %d], rcx", stack_offset - 16);
+                            stack_offset -= 16;
                             reg_idx += 2;
                         }
                     } else if (arg_type && arg_type->kind == TYPE_FLOAT) {
                         int        arg_slot  = slot_of(&slotmap, i->call.args[a]);
                         long long* const_val = ht_find(&slotmap.const_vals, i->call.args[a]);
 
-                        if (const_val) {
-                            long long val = *const_val;
-                            int       lo  = (int)(val & 0xFFFFFFFF);
-                            int       hi  = (int)((val >> 32) & 0xFFFFFFFF);
-                            L(out, "mov eax, %d", lo);
-                            L(out, "mov %s, %d", "edx", hi);
-                            L(out, "shl %s, 32", "rdx");
-                            L(out, "or %s, %s", "rax", "rdx");
-                            L(out, "movq %s, %s", XMMREGS[xmm_idx], "rax");
-                        } else {
-                            L(out, "movq %s, qword %s", XMMREGS[xmm_idx], mem(arg_slot, buf));
-                        }
-                        xmm_idx++;
-                    } else if (reg_idx < MAX_ARGREGS) {
-                        int  arg_bytes  = arg_type ? type_bytes(arg_type) : 8;
-                        bool arg_signed = arg_type ? type_is_signed(arg_type) : false;
-                        int  arg_slot   = slot_of(&slotmap, i->call.args[a]);
-
-                        long long* const_val = ht_find(&slotmap.const_vals, i->call.args[a]);
-
-                        IrVal    arg_val   = i->call.args[a];
-                        IrInstr* arg_instr = NULL;
-                        for (int ii = 0; ii < f->instr_count; ii++) {
-                            if (f->instrs[ii].dst == arg_val) {
-                                arg_instr = &f->instrs[ii];
-                                break;
-                            }
-                        }
-
-                        if (arg_instr && arg_instr->op == IR_STRING) {
-                            L(out, "lea %s, [__str%d]", ARGREGS[reg_idx], arg_instr->str_idx);
-                        } else if (const_val) {
-                            if (*const_val >= (-1LL << 31) && *const_val <= (1LL << 31) - 1) {
-                                const char* arg_reg_32 = reg_for_bytes(ARGREGS[reg_idx], 4);
-                                L(out, "mov %s, %lld", arg_reg_32, *const_val);
+                        if (xmm_idx < MAX_XMMREGS) {
+                            if (const_val) {
+                                emit_load_float_to_xmm(out, XMMREGS[xmm_idx], *const_val);
                             } else {
-                                L(out, "mov %s, %lld", "rax", *const_val);
-                                L(out, "mov %s, %s", ARGREGS[reg_idx], "rax");
+                                L(out, "movq %s, qword %s", XMMREGS[xmm_idx], mem(arg_slot, buf));
                             }
+                            xmm_idx++;
                         } else {
-                            emit_load_or_const(
-                                out, &slotmap, i->call.args[a], arg_bytes, arg_signed, mem(arg_slot, buf)
-                            );
-                            L(out, "mov %s, %s", ARGREGS[reg_idx], "rax");
+                            if (const_val) {
+                                L(out, "mov rax, %lld", *const_val);
+                            } else {
+                                L(out, "mov rax, qword %s", mem(arg_slot, buf));
+                            }
+                            L(out, "mov qword [rsp + %d], rax", stack_offset - 8);
+                            stack_offset -= 8;
                         }
-                        reg_idx++;
+                    } else {
+                        int        arg_bytes  = arg_type ? type_bytes(arg_type) : 8;
+                        bool       arg_signed = arg_type ? type_is_signed(arg_type) : false;
+                        int        arg_slot   = slot_of(&slotmap, i->call.args[a]);
+                        long long* const_val  = ht_find(&slotmap.const_vals, i->call.args[a]);
+
+                        if (reg_idx < MAX_ARGREGS) {
+                            IrVal    arg_val   = i->call.args[a];
+                            IrInstr* arg_instr = NULL;
+                            for (int ii = 0; ii < f->instr_count; ii++) {
+                                if (f->instrs[ii].dst == arg_val) {
+                                    arg_instr = &f->instrs[ii];
+                                    break;
+                                }
+                            }
+
+                            if (arg_instr && arg_instr->op == IR_STRING) {
+                                L(out, "lea %s, [__str%d]", ARGREGS[reg_idx], arg_instr->str_idx);
+                            } else if (const_val) {
+                                if (*const_val >= (-1LL << 31) && *const_val <= (1LL << 31) - 1) {
+                                    const char* arg_reg_32 = reg_for_bytes(ARGREGS[reg_idx], 4);
+                                    L(out, "mov %s, %lld", arg_reg_32, *const_val);
+                                } else {
+                                    L(out, "mov rax, %lld", *const_val);
+                                    L(out, "mov %s, rax", ARGREGS[reg_idx]);
+                                }
+                            } else {
+                                emit_load_or_const(
+                                    out, &slotmap, i->call.args[a], arg_bytes, arg_signed, mem(arg_slot, buf)
+                                );
+                                L(out, "mov %s, rax", ARGREGS[reg_idx]);
+                            }
+                            reg_idx++;
+                        } else {
+                            if (const_val) {
+                                L(out, "mov rax, %lld", *const_val);
+                            } else {
+                                emit_load_or_const(
+                                    out, &slotmap, i->call.args[a], arg_bytes, arg_signed, mem(arg_slot, buf)
+                                );
+                            }
+                            L(out, "mov qword [rsp + %d], rax", stack_offset - 8);
+                            stack_offset -= 8;
+                            reg_idx++;
+                        }
                     }
                 }
+
                 L(out, "call %s", symmap_lookup(sm, i->call.name));
-                if (i->dst != IR_NO_VAL) {
+
+                if (stack_space > 0) {
+                    int add_amount = align_stack_size(stack_space);
+                    L(out, "add rsp, %d", add_amount);
+                }
+
+                if (i->dst != IR_NO_VAL && ht_find(&slotmap.offsets, i->dst)) {
                     if (is_float)
                         L(out, "movq rax, xmm0");
                     emit_store_slot(out, bytes, mem(slot_of(&slotmap, i->dst), buf));
@@ -533,9 +598,9 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             }
 
             case IR_BINOP: {
-                int  lhs_bytes  = i->lhs_type ? type_bytes(i->lhs_type) : 8;
+                int  lhs_bytes  = i->lhs_type ? type_bytes(i->lhs_type) : REGISTER_SIZE;
                 bool lhs_signed = i->lhs_type ? type_is_signed(i->lhs_type) : false;
-                int  rhs_bytes  = i->rhs_type ? type_bytes(i->rhs_type) : 8;
+                int  rhs_bytes  = i->rhs_type ? type_bytes(i->rhs_type) : REGISTER_SIZE;
                 bool rhs_signed = i->rhs_type ? type_is_signed(i->rhs_type) : false;
                 bool cmp_signed = lhs_signed || rhs_signed;
                 bool is_float   = i->lhs_type && i->lhs_type->kind == TYPE_FLOAT;
@@ -543,28 +608,14 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 if (is_float) {
                     long long* lhs_const = ht_find(&slotmap.const_vals, i->blhs);
                     if (lhs_const) {
-                        long long val = *lhs_const;
-                        int       lo  = (int)(val & 0xFFFFFFFF);
-                        int       hi  = (int)((val >> 32) & 0xFFFFFFFF);
-                        L(out, "mov eax, %d", lo);
-                        L(out, "mov edx, %d", hi);
-                        L(out, "shl %s, 32", "rdx");
-                        L(out, "or %s, %s", "rax", "rdx");
-                        L(out, "movq %s, %s", XMMREGS[0], "rax");
+                        emit_load_float_to_xmm(out, XMMREGS[0], *lhs_const);
                     } else {
                         L(out, "movq %s, qword %s", XMMREGS[0], mem(slot_of(&slotmap, i->blhs), buf));
                     }
 
                     long long* rhs_const = ht_find(&slotmap.const_vals, i->brhs);
                     if (rhs_const) {
-                        long long val = *rhs_const;
-                        int       lo  = (int)(val & 0xFFFFFFFF);
-                        int       hi  = (int)((val >> 32) & 0xFFFFFFFF);
-                        L(out, "mov eax, %d", lo);
-                        L(out, "mov edx, %d", hi);
-                        L(out, "shl %s, 32", "rdx");
-                        L(out, "or %s, %s", "rax", "rdx");
-                        L(out, "movq %s, %s", XMMREGS[1], "rax");
+                        emit_load_float_to_xmm(out, XMMREGS[1], *rhs_const);
                     } else {
                         L(out, "movq %s, qword %s", XMMREGS[1], mem(slot_of(&slotmap, i->brhs), buf2));
                     }
@@ -731,7 +782,9 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     }
                 }
                 int bytes = type_bytes(i->type);
-                emit_store_slot(out, bytes, mem(slot_of(&slotmap, i->dst), buf));
+                if (ht_find(&slotmap.offsets, i->dst)) {
+                    emit_store_slot(out, bytes, mem(slot_of(&slotmap, i->dst), buf));
+                }
                 break;
             }
 
@@ -1088,28 +1141,28 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
             case IR_NULL_CHECK: {
                 if (!opts.no_assertions) {
                     static int null_check_label_counter = 0;
-                    int ok_label = null_check_label_counter++;
-                    
+                    int        ok_label                 = null_check_label_counter++;
+
                     int src_slot = slot_of(&slotmap, i->src);
                     emit_load_or_const(out, &slotmap, i->src, 8, false, mem(src_slot, buf));
-                    
+
                     L(out, "test rax, rax");
                     L(out, "jnz .null_check_ok_%d", ok_label);
-                    
+
                     state.has_used_assertion_null_ptr = true;
-                    
+
                     /* syscall(write(2, "__assertion_null_ptr", len)) */
                     L(out, "mov rax, 1");
                     L(out, "mov rdi, 2");
                     L(out, "lea rsi, [__assertion_null_ptr]");
                     L(out, "mov rdx, %d", strlen(REI_ASSERTION_NULL_PTR_MSG) + 1);
                     L(out, "syscall");
-                    
+
                     /* syscall(exit(13)) */
                     L(out, "mov rax, 60");
                     L(out, "mov rdi, 13");
                     L(out, "syscall");
-                    
+
                     fprintf(out, ".null_check_ok_%d:\n", ok_label);
                 }
                 break;

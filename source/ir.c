@@ -395,7 +395,7 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
         }
         case AST_CALL: {
             int total_arg_count = e->arg_count;
-            if (e->func_decl != NULL && e->arg_count < e->func_decl->param_count) {
+            if (e->func_decl != NULL && e->arg_count < e->func_decl->param_count && !e->func_decl->is_variadic) {
                 total_arg_count = e->func_decl->param_count;
             }
 
@@ -413,9 +413,9 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                     Type* param_type = e->func_decl->params[a].type;
                     if (param_type && param_type->kind == TYPE_PTR && param_type->ptr_type.non_null) {
                         IrInstr* chk = emit(f);
-                        chk->op  = IR_NULL_CHECK;
-                        chk->dst = IR_NO_VAL;
-                        chk->src = v;
+                        chk->op      = IR_NULL_CHECK;
+                        chk->dst     = IR_NO_VAL;
+                        chk->src     = v;
                     }
                 }
 
@@ -914,16 +914,15 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                     return IR_NO_VAL;
                 }
                 case UOP_DEREF: {
-                    IrVal    ptr = lower_expr(m, f, e->operand, vars);
-                    
-                    if (e->operand->type && e->operand->type->kind == TYPE_PTR && 
-                        e->operand->type->ptr_type.non_null) {
+                    IrVal ptr = lower_expr(m, f, e->operand, vars);
+
+                    if (e->operand->type && e->operand->type->kind == TYPE_PTR && e->operand->type->ptr_type.non_null) {
                         IrInstr* chk = emit(f);
-                        chk->op  = IR_NULL_CHECK;
-                        chk->dst = IR_NO_VAL;
-                        chk->src = ptr;
+                        chk->op      = IR_NULL_CHECK;
+                        chk->dst     = IR_NO_VAL;
+                        chk->src     = ptr;
                     }
-                    
+
                     IrInstr* ld  = emit(f);
                     ld->op       = IR_LOAD;
                     ld->dst      = next_val(f);
@@ -1455,9 +1454,9 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                         if (!is_agg) {
                             if (vtype && vtype->kind == TYPE_PTR && vtype->ptr_type.non_null) {
                                 IrInstr* chk = emit(f);
-                                chk->op  = IR_NULL_CHECK;
-                                chk->dst = IR_NO_VAL;
-                                chk->src = init_val;
+                                chk->op      = IR_NULL_CHECK;
+                                chk->dst     = IR_NO_VAL;
+                                chk->src     = init_val;
                             }
 
                             IrInstr* st   = emit(f);
@@ -1565,9 +1564,9 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                 if (slot && slot->ptr != IR_NO_VAL) {
                     if (s->type && s->type->kind == TYPE_PTR && s->type->ptr_type.non_null) {
                         IrInstr* chk = emit(f);
-                        chk->op  = IR_NULL_CHECK;
-                        chk->dst = IR_NO_VAL;
-                        chk->src = new_val;
+                        chk->op      = IR_NULL_CHECK;
+                        chk->dst     = IR_NO_VAL;
+                        chk->src     = new_val;
                     }
 
                     IrInstr* st   = emit(f);
