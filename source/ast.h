@@ -150,6 +150,9 @@ typedef enum {
     BUILTIN_SIZEOF,      /* #sizeof(T) || #sizeof(expr) */
     BUILTIN_ALIGNOF,     /* #alignof(T) || #alignof(expr) */
     BUILTIN_OFFSETOF,    /* #offsetof(T, member) */
+    BUILTIN_TYPEOF,      /* #typeof(expr) */
+    BUILTIN_TYPESTR,     /* #typestr(expr) */
+    BUILTIN_TIME,        /* #time("fmt string") || #time(tm) */
 
     ANNOT_NO_MANGLE,     /* #no_mangle <func decl> */
     ANNOT_PRINTF_LIKE,   /* #printf_like(fmt) || #printf_like("fmt") || #printf_like(0) */

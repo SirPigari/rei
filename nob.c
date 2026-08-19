@@ -156,7 +156,7 @@ int main(int argc, char** argv) {
         if (!should_rebuild)
             continue;
 
-        cmd_append(&cmd, "gcc", "-rdynamic", "-c", "-o", obj, "-MMD", "-MF", dep, "-MT", obj, src);
+        cmd_append(&cmd, "gcc", "-gdwarf-4", "-fno-omit-frame-pointer", "-rdynamic", "-c", "-ldw", "-o", obj, "-MMD", "-MF", dep, "-MT", obj, src);
 
         if (!nob_cmd_run(&cmd, .async = &procs)) {
             ok = false;
@@ -187,7 +187,7 @@ int main(int argc, char** argv) {
     }
 
     if (need_relink) {
-        cmd_append(&cmd, "gcc", "-rdynamic", "-o", OUTPUT, "-lm");
+        cmd_append(&cmd, "gcc", "-gdwarf-4", "-fno-omit-frame-pointer", "-rdynamic", "-o", OUTPUT, "-lm", "-ldw");
 
         for (size_t i = 0; i < NOB_ARRAY_LEN(source_files); i++)
             cmd_append(&cmd, obj_path(source_files[i]));

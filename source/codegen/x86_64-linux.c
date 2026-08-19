@@ -131,7 +131,7 @@ static SymMap symmap_build(IrModule* m) {
     for (int i = 0; i < m->count; i++) {
         IrFunc*     f = m->funcs[i];
         const char* asm_name;
-        
+
         if (f->link_name) {
             asm_name = f->link_name;
         } else if (f->is_extern || f->no_mangle) {
@@ -360,7 +360,7 @@ static void emit_store_slot(FILE* out, int bytes, const char* mem_expr) {
     emit_store_slot_from(out, bytes, mem_expr, "rax");
 }
 
-static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
+static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
     fprintf(out, "%s:\n", symmap_lookup(sm, f->name));
     L(out, "push %s", "rbp");
     L(out, "mov %s, %s", "rbp", "rsp");
@@ -982,12 +982,13 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                 bool fat       = i->type && i->type->kind == TYPE_PTR && i->type->ptr_type.is_fat;
 
                 if (fat) {
-                    int val_off = slot_of(&slotmap, i->store_val);
                     int ptr_off = slot_of(&slotmap, i->store_ptr);
+                    int val_off = slot_of(&slotmap, i->store_val);
+                    
                     L(out, "mov rax, qword %s", mem(val_off, buf));
-                    L(out, "mov rcx, qword %s", mem(val_off + 8, buf2));
+                    L(out, "mov rcx, qword %s", mem(val_off - 8, buf2));
                     L(out, "mov qword %s, rax", mem(ptr_off, buf));
-                    L(out, "mov qword %s, rcx", mem(ptr_off + 8, buf2));
+                    L(out, "mov qword %s, rcx", mem(ptr_off - 8, buf2));
                 } else if (is_alloca(&slotmap, i->store_ptr)) {
                     int alloca_off = slot_of(&slotmap, i->store_ptr);
                     L(out, "lea r11, %s", mem(alloca_off, buf));
@@ -995,9 +996,20 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     if (is_alloca(&slotmap, i->store_val)) {
                         L(out, "lea rax, %s", mem(slot_of(&slotmap, i->store_val), buf2));
                     } else {
-                        emit_load_or_const(
-                            out, &slotmap, i->store_val, bytes, is_signed, mem(slot_of(&slotmap, i->store_val), buf2)
-                        );
+                        IrInstr* val_instr = NULL;
+                        for (int ii = 0; ii < f->instr_count; ii++) {
+                            if (f->instrs[ii].dst == i->store_val) {
+                                val_instr = &f->instrs[ii];
+                                break;
+                            }
+                        }
+                        if (val_instr && val_instr->op == IR_STRING) {
+                            L(out, "lea rax, [__str%d]", val_instr->str_idx);
+                        } else {
+                            emit_load_or_const(
+                                out, &slotmap, i->store_val, bytes, is_signed, mem(slot_of(&slotmap, i->store_val), buf2)
+                            );
+                        }
                     }
 
                     switch (bytes) {
@@ -1010,8 +1022,11 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                         case 4:
                             L(out, "mov dword [r11], eax");
                             break;
-                        default:
+                        case 8:
                             L(out, "mov qword [r11], rax");
+                            break;
+                        default:
+                            ICE("unsupported store size in codegen");
                             break;
                     }
                 } else {
@@ -1021,9 +1036,20 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                     if (is_alloca(&slotmap, i->store_val)) {
                         L(out, "lea rax, %s", mem(slot_of(&slotmap, i->store_val), buf2));
                     } else {
-                        emit_load_or_const(
-                            out, &slotmap, i->store_val, bytes, is_signed, mem(slot_of(&slotmap, i->store_val), buf2)
-                        );
+                        IrInstr* val_instr = NULL;
+                        for (int ii = 0; ii < f->instr_count; ii++) {
+                            if (f->instrs[ii].dst == i->store_val) {
+                                val_instr = &f->instrs[ii];
+                                break;
+                            }
+                        }
+                        if (val_instr && val_instr->op == IR_STRING) {
+                            L(out, "lea rax, [__str%d]", val_instr->str_idx);
+                        } else {
+                            emit_load_or_const(
+                                out, &slotmap, i->store_val, bytes, is_signed, mem(slot_of(&slotmap, i->store_val), buf2)
+                            );
+                        }
                     }
 
                     switch (bytes) {
@@ -1036,8 +1062,11 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out) {
                         case 4:
                             L(out, "mov dword [r11], eax");
                             break;
-                        default:
+                        case 8:
                             L(out, "mov qword [r11], rax");
+                            break;
+                        default:
+                            ICE("unsupported store size in codegen");
                             break;
                     }
                 }
@@ -1297,7 +1326,7 @@ void codegen_x86_64_linux(IrModule* m, FILE* out) {
     for (int fi = 0; fi < m->count; fi++) {
         IrFunc* f = m->funcs[fi];
         if (!f->is_extern)
-            emit_func(f, &sm, out);
+            emit_func(f, &sm, out, m);
     }
 
     if (has_main) {

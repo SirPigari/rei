@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static bool types_equal(Type* a, Type* b) {
     if (a == b)
@@ -324,7 +325,7 @@ static bool types_assignable(Type* actual, Type* expected) {
 static Type* resolve_abstract_from_printf_spec(Type* t, char spec, char length_mod) {
     if (!t)
         return t;
-    
+
     if (t->kind == TYPE_INT && t->int_type.is_abstract) {
         switch (spec) {
             case 'd':
@@ -357,7 +358,7 @@ static Type* resolve_abstract_from_printf_spec(Type* t, char spec, char length_m
                 break;
         }
     }
-    
+
     if (t->kind == TYPE_FLOAT && t->int_type.is_abstract) {
         switch (spec) {
             case 'f':
@@ -377,7 +378,7 @@ static Type* resolve_abstract_from_printf_spec(Type* t, char spec, char length_m
                 break;
         }
     }
-    
+
     return t;
 }
 
@@ -563,20 +564,20 @@ static bool check_printf_format(
             }
 
             Type* arg_type = variadic_args[arg_idx]->type;
-            
+
             Type* resolved_type = resolve_abstract_from_printf_spec(arg_type, spec, length_mod);
             if (resolved_type != arg_type) {
                 variadic_args[arg_idx]->type = resolved_type;
-                arg_type = resolved_type;
+                arg_type                     = resolved_type;
             }
-            
-            if ((spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G') && 
+
+            if ((spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G') &&
                 !length_mod && arg_type && arg_type->kind == TYPE_FLOAT && arg_type->bits == 32) {
-                Type* f64_type = type_number(TYPE_FLOAT, 64, 0);
+                Type* f64_type               = type_number(TYPE_FLOAT, 64, 0);
                 variadic_args[arg_idx]->type = f64_type;
-                arg_type = f64_type;
+                arg_type                     = f64_type;
             }
-            
+
             if (!type_matches_printf_spec(arg_type, spec, length_mod)) {
                 char        ts[64];
                 const char* expected = "unknown";
@@ -642,6 +643,213 @@ static bool check_printf_format(
         diag_emit(DIAG_WARN, call_loc, "printf format string uses fewer arguments than provided");
     }
 
+    return true;
+}
+
+static bool check_scanf_format(
+    const char* fmt,
+    size_t      fmt_len,
+    AstNode**   variadic_args,
+    int         variadic_count,
+    Location    call_loc
+) {
+    int arg_idx = 0;
+    for (size_t i = 0; i < fmt_len; i++) {
+        if (fmt[i] == '%' && i + 1 < fmt_len) {
+            i++;
+            if (fmt[i] == '%') {
+                continue;
+            }
+
+            while (i < fmt_len && (fmt[i] == '*' || fmt[i] == '-' || (fmt[i] >= '0' && fmt[i] <= '9'))) {
+                i++;
+            }
+
+            if (i >= fmt_len)
+                break;
+
+            char length_mod = '\0';
+            if (fmt[i] == 'h' || fmt[i] == 'l' || fmt[i] == 'L' || fmt[i] == 'z' || fmt[i] == 'j' || fmt[i] == 't') {
+                length_mod = fmt[i];
+                i++;
+            }
+
+            if (i >= fmt_len)
+                break;
+
+            char spec = fmt[i];
+
+            if (spec == 'n' || spec == 'c' || spec == '%') {
+                if (spec != '%')
+                    continue;
+                else
+                    continue;
+            }
+
+            if (arg_idx >= variadic_count) {
+                diag_emit(DIAG_WARN, call_loc, "scanf format string expects more arguments than provided");
+                return false;
+            }
+
+            Type* arg_type = variadic_args[arg_idx]->type;
+
+            bool arg_valid = false;
+            switch (spec) {
+                case 'd':
+                case 'i':
+                case 'u':
+                case 'o':
+                case 'x':
+                case 'X':
+                    arg_valid = arg_type && arg_type->kind == TYPE_PTR;
+                    break;
+                case 'f':
+                case 'F':
+                case 'e':
+                case 'E':
+                case 'g':
+                case 'G':
+                    arg_valid = arg_type && arg_type->kind == TYPE_PTR;
+                    break;
+                case 's':
+                case '[':
+                    arg_valid = arg_type && arg_type->kind == TYPE_PTR;
+                    break;
+                case 'p':
+                    arg_valid = arg_type && arg_type->kind == TYPE_PTR;
+                    break;
+            }
+
+            if (!arg_valid) {
+                char ts[64];
+                diag_emit(
+                    DIAG_WARN,
+                    variadic_args[arg_idx]->loc,
+                    "scanf format specifier '%%%c%s' expects a pointer argument, got %s",
+                    length_mod ? length_mod : ' ',
+                    length_mod ? &spec : &spec,
+                    type_str(arg_type, ts, sizeof(ts))
+                );
+            }
+            arg_idx++;
+        }
+    }
+
+    if (arg_idx < variadic_count) {
+        diag_emit(DIAG_WARN, call_loc, "scanf format string uses fewer arguments than provided");
+    }
+
+    return true;
+}
+
+static bool check_strftime_format(const char* fmt, size_t fmt_len, Location call_loc) {
+    for (size_t i = 0; i < fmt_len; i++) {
+        if (fmt[i] == '%' && i + 1 < fmt_len) {
+            i++;
+            if (fmt[i] == '%') {
+                continue;
+            }
+
+            char spec  = fmt[i];
+            bool valid = false;
+            switch (spec) {
+                case 'a':
+                case 'A':
+                case 'b':
+                case 'B':
+                case 'c':
+                case 'd':
+                case 'e':
+                case 'F':
+                case 'g':
+                case 'G':
+                case 'h':
+                case 'H':
+                case 'I':
+                case 'j':
+                case 'k':
+                case 'l':
+                case 'm':
+                case 'M':
+                case 'n':
+                case 'p':
+                case 'P':
+                case 'r':
+                case 'R':
+                case 's':
+                case 'S':
+                case 't':
+                case 'T':
+                case 'u':
+                case 'U':
+                case 'V':
+                case 'w':
+                case 'W':
+                case 'x':
+                case 'X':
+                case 'y':
+                case 'Y':
+                case 'z':
+                case 'Z':
+                    valid = true;
+                    break;
+                case '-':
+                case '_':
+                case '0':
+                    if (i + 1 < fmt_len) {
+                        i++;
+                        spec = fmt[i];
+                        switch (spec) {
+                            case 'a':
+                            case 'A':
+                            case 'b':
+                            case 'B':
+                            case 'c':
+                            case 'd':
+                            case 'e':
+                            case 'F':
+                            case 'g':
+                            case 'G':
+                            case 'h':
+                            case 'H':
+                            case 'I':
+                            case 'j':
+                            case 'k':
+                            case 'l':
+                            case 'm':
+                            case 'M':
+                            case 'n':
+                            case 'p':
+                            case 'P':
+                            case 'r':
+                            case 'R':
+                            case 's':
+                            case 'S':
+                            case 't':
+                            case 'T':
+                            case 'u':
+                            case 'U':
+                            case 'V':
+                            case 'w':
+                            case 'W':
+                            case 'x':
+                            case 'X':
+                            case 'y':
+                            case 'Y':
+                            case 'z':
+                            case 'Z':
+                                valid = true;
+                                break;
+                        }
+                    }
+                    break;
+            }
+
+            if (!valid && spec != '%') {
+                diag_emit(DIAG_WARN, call_loc, "invalid strftime format specifier '%%%c'", spec);
+            }
+        }
+    }
     return true;
 }
 
@@ -773,6 +981,7 @@ static Type* resolve_type(Type* t, Scope* sc) {
 
 static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint);
 static void  check_stmt(AstNode* s, Scope* sc, AstNode* fn);
+static bool  check_annotation(AstNode* annot, AstNode* target);
 
 static Type* check_expr(AstNode* e, Scope* sc) {
     return check_expr_hint(e, sc, NULL);
@@ -1056,22 +1265,34 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                 }
             }
 
+            if (FUNC_IS_FLAG(fn, FUNC_FLAG_SCANF_LIKE) && fn->param_idx >= 0 && fn->param_idx < e->arg_count) {
+                AstNode* fmt_arg = e->args[fn->param_idx];
+                if (fmt_arg->kind == AST_STRING_LIT) {
+                    int variadic_start = variadic_index;
+                    if (variadic_start == -1) {
+                        variadic_start = fn->param_count;
+                    }
+                    int variadic_arg_count = e->arg_count - variadic_start;
+                    check_scanf_format(
+                        fmt_arg->str, fmt_arg->len, &e->args[variadic_start], variadic_arg_count, e->loc
+                    );
+                }
+            }
+
+            if (FUNC_IS_FLAG(fn, FUNC_FLAG_STRFTIME_LIKE) && fn->param_idx >= 0 && fn->param_idx < e->arg_count) {
+                AstNode* fmt_arg = e->args[fn->param_idx];
+                if (fmt_arg->kind == AST_STRING_LIT) {
+                    check_strftime_format(fmt_arg->str, fmt_arg->len, e->loc);
+                }
+            }
+
             if (FUNC_IS_FLAG(fn, FUNC_FLAG_DEPRECATED)) {
                 if (fn->deprecated_msg) {
                     diag_emit(
-                        DIAG_WARN,
-                        e->loc,
-                        "function '%s' is deprecated: %s",
-                        fn->function_name,
-                        fn->deprecated_msg
+                        DIAG_WARN, e->loc, "function '%s' is deprecated: %s", fn->function_name, fn->deprecated_msg
                     );
                 } else {
-                    diag_emit(
-                        DIAG_WARN,
-                        e->loc,
-                        "function '%s' is deprecated",
-                        fn->function_name
-                    );
+                    diag_emit(DIAG_WARN, e->loc, "function '%s' is deprecated", fn->function_name);
                 }
             }
 
@@ -1524,8 +1745,8 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
             if (start_type && end_type) {
                 if (!types_equal(start_type, end_type)) {
-                    if (!is_abstract_int(start_type) && !is_abstract_int(end_type) &&
-                        !is_abstract_float(start_type) && !is_abstract_float(end_type)) {
+                    if (!is_abstract_int(start_type) && !is_abstract_int(end_type) && !is_abstract_float(start_type) &&
+                        !is_abstract_float(end_type)) {
                         char st[64], et[64];
                         diag_emit(
                             DIAG_ERROR,
@@ -1600,6 +1821,189 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
             e->type = start_type ? start_type : end_type;
             return e->type;
+        }
+
+        case AST_ANNOTATION: {
+            if (!check_annotation(e, NULL))
+                return ERROR_TYPE;
+
+            switch (e->annot_type) {
+                case BUILTIN_SIZEOF: {
+                    if (e->annot_expr_count != 1)
+                        return ERROR_TYPE;
+
+                    AstNode* arg      = e->annot_exprs[0];
+                    Type*    arg_type = NULL;
+
+                    if (arg->kind == AST_TYPE_LIT && arg->typeval) {
+                        arg_type = arg->typeval;
+                        
+                        if (arg_type->kind == TYPE_IDENT) {
+                            const char* ident_name = arg_type->ident_type.name;
+                            Type* resolved = expr_ident_to_type(ident_name);
+                            if (resolved) {
+                                arg_type = resolved;
+                            } else {
+                                SymbolEntry* sym = scope_lookup(sc, ident_name);
+                                if (sym && sym->type) {
+                                    arg_type = sym->type;
+                                } else {
+                                    diag_emit(DIAG_ERROR, arg->loc, "unknown type or variable '%s'", ident_name);
+                                    return ERROR_TYPE;
+                                }
+                            }
+                        }
+                    } else {
+                        arg_type = check_expr(arg, sc);
+                    }
+
+                    if (!arg_type)
+                        return ERROR_TYPE;
+
+                    int size = type_bytes(arg_type);
+                    if (arg_type->kind == TYPE_ARRAY && arg_type->array_type.len > 0) {
+                        size = type_bytes(arg_type->array_type.elem_type) * (int)arg_type->array_type.len;
+                    }
+
+                    e->kind = AST_INT_LIT;
+                    e->ival = size;
+                    e->type = type_abstract_int();
+                    return e->type;
+                }
+
+                case BUILTIN_ALIGNOF: {
+                    if (e->annot_expr_count != 1)
+                        return ERROR_TYPE;
+
+                    AstNode* arg      = e->annot_exprs[0];
+                    Type*    arg_type = NULL;
+
+                    if (arg->kind == AST_TYPE_LIT && arg->typeval) {
+                        arg_type = arg->typeval;
+                        
+                        if (arg_type->kind == TYPE_IDENT) {
+                            const char* ident_name = arg_type->ident_type.name;
+                            Type* resolved = expr_ident_to_type(ident_name);
+                            if (resolved) {
+                                arg_type = resolved;
+                            } else {
+                                SymbolEntry* sym = scope_lookup(sc, ident_name);
+                                if (sym && sym->type) {
+                                    arg_type = sym->type;
+                                } else {
+                                    diag_emit(DIAG_ERROR, arg->loc, "unknown type or variable '%s'", ident_name);
+                                    return ERROR_TYPE;
+                                }
+                            }
+                        }
+                    } else {
+                        arg_type = check_expr(arg, sc);
+                    }
+
+                    if (!arg_type)
+                        return ERROR_TYPE;
+
+                    int align = 8; /* TODO: actuall alignment */
+                    if (arg_type->kind == TYPE_INT || arg_type->kind == TYPE_FLOAT) {
+                        align = arg_type->bits / 8;
+                        if (align == 0)
+                            align = 8;
+                    }
+
+                    e->kind = AST_INT_LIT;
+                    e->ival = align;
+                    e->type = type_abstract_int();
+                    return e->type;
+                }
+
+                case BUILTIN_TYPESTR: {
+                    if (e->annot_expr_count != 1)
+                        return ERROR_TYPE;
+
+                    AstNode* arg      = e->annot_exprs[0];
+                    Type*    arg_type = NULL;
+
+                    if (arg->kind == AST_TYPE_LIT && arg->typeval) {
+                        arg_type = arg->typeval;
+                        
+                        if (arg_type->kind == TYPE_IDENT) {
+                            const char* ident_name = arg_type->ident_type.name;
+                            Type* resolved = expr_ident_to_type(ident_name);
+                            if (resolved) {
+                                arg_type = resolved;
+                            } else {
+                                SymbolEntry* sym = scope_lookup(sc, ident_name);
+                                if (sym && sym->type) {
+                                    arg_type = sym->type;
+                                } else {
+                                    diag_emit(DIAG_ERROR, arg->loc, "unknown type or variable '%s'", ident_name);
+                                    return ERROR_TYPE;
+                                }
+                            }
+                        }
+                    } else {
+                        diag_emit(DIAG_ERROR, arg->loc, "#typestr argument must be a type");
+                        return ERROR_TYPE;
+                    }
+
+                    char* type_buf = malloc(256);
+                    type_str(arg_type, type_buf, 256);
+
+                    e->kind      = AST_STRING_LIT;
+                    e->str       = type_buf;
+                    e->len       = strlen(type_buf);
+                    e->str_flags = 0;
+
+                    Type* u8 = type_number(TYPE_INT, 8, true);
+                    if (hint && hint->kind == TYPE_PTR && !hint->ptr_type.is_fat) {
+                        e->type = type_ptr(u8, false, false); /* *u8 */
+                        e->str_flags = STR_PREFIX_C;
+                    } else {
+                        e->type = type_ptr(u8, true, false);  /* []u8 */
+                        e->str_flags = 0;
+                    }
+                    return e->type;
+                }
+
+                case BUILTIN_TIME: {
+                    static struct tm* timeinfo = NULL;
+                    static bool       timeinit = false;
+                    if (!timeinit) {
+                        time_t now = time(NULL);
+                        timeinfo   = gmtime(&now);
+                        timeinit   = true;
+                    }
+                    char* time_buf = malloc(256);
+                    
+                    if (e->annot_expr_count == 1) {
+                        AstNode* fmt_arg = e->annot_exprs[0];
+                        if (fmt_arg->kind == AST_STRING_LIT) {
+                            strftime(time_buf, 256, fmt_arg->str, timeinfo);
+                        } else {
+                            strftime(time_buf, 256, "%Y-%m-%dT%H:%M:%SZ", timeinfo);
+                        }
+                    } else {
+                        strftime(time_buf, 256, "%Y-%m-%dT%H:%M:%SZ", timeinfo);
+                    }
+
+                    e->kind      = AST_STRING_LIT;
+                    e->len       = strlen(time_buf);
+                    e->str       = time_buf;
+
+                    Type* u8 = type_number(TYPE_INT, 8, true);
+                    if (hint && hint->kind == TYPE_PTR && !hint->ptr_type.is_fat) {
+                        e->type = type_ptr(u8, false, false); /* *u8 */
+                        e->str_flags = STR_PREFIX_C;
+                    } else {
+                        e->type = type_ptr(u8, true, false);  /* []u8 */
+                        e->str_flags = 0;
+                    }
+                    return e->type;
+                }
+
+                default:
+                    return ERROR_TYPE;
+            }
         }
 
         default:
@@ -2429,9 +2833,7 @@ static bool check_annotation(AstNode* annot, AstNode* target) {
             }
 
             if (!FUNC_IS_FLAG(target, FUNC_FLAG_VARIADIC)) {
-                diag_emit(
-                    DIAG_ERROR, annot->loc, "scanf_like cannot be used on functions without variadic parameters"
-                );
+                diag_emit(DIAG_ERROR, annot->loc, "scanf_like cannot be used on functions without variadic parameters");
                 return false;
             }
 
@@ -2521,7 +2923,9 @@ static bool check_annotation(AstNode* annot, AstNode* target) {
                 }
             } else {
                 diag_emit(
-                    DIAG_ERROR, arg->loc, "strftime_like argument must be an identifier, string literal, or integer index"
+                    DIAG_ERROR,
+                    arg->loc,
+                    "strftime_like argument must be an identifier, string literal, or integer index"
                 );
                 return false;
             }
@@ -2580,9 +2984,7 @@ static bool check_annotation(AstNode* annot, AstNode* target) {
         case ANNOT_INLINE: {
             if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
                 diag_emit(
-                    DIAG_ERROR,
-                    annot->loc,
-                    "inline annotation can only be applied to function or extern declarations"
+                    DIAG_ERROR, annot->loc, "inline annotation can only be applied to function or extern declarations"
                 );
                 return false;
             }
@@ -2598,10 +3000,7 @@ static bool check_annotation(AstNode* annot, AstNode* target) {
                         target->inline_hint = 2;
                     } else {
                         diag_emit(
-                            DIAG_ERROR,
-                            arg->loc,
-                            "inline hint must be 'never' or 'always', got '%s'",
-                            arg->ident
+                            DIAG_ERROR, arg->loc, "inline hint must be 'never' or 'always', got '%s'", arg->ident
                         );
                         return false;
                     }
@@ -2617,17 +3016,13 @@ static bool check_annotation(AstNode* annot, AstNode* target) {
         case ANNOT_SENTINEL: {
             if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
                 diag_emit(
-                    DIAG_ERROR,
-                    annot->loc,
-                    "sentinel annotation can only be applied to function or extern declarations"
+                    DIAG_ERROR, annot->loc, "sentinel annotation can only be applied to function or extern declarations"
                 );
                 return false;
             }
 
             if (!FUNC_IS_FLAG(target, FUNC_FLAG_VARIADIC)) {
-                diag_emit(
-                    DIAG_ERROR, annot->loc, "sentinel can only be used on functions with variadic parameters"
-                );
+                diag_emit(DIAG_ERROR, annot->loc, "sentinel can only be used on functions with variadic parameters");
                 return false;
             }
 
@@ -2672,6 +3067,70 @@ static bool check_annotation(AstNode* annot, AstNode* target) {
                 return false;
             }
 
+            return true;
+        }
+
+        case BUILTIN_SIZEOF: {
+            if (annot->annot_expr_count != 1) {
+                diag_emit(DIAG_ERROR, annot->loc, "sizeof requires exactly one argument");
+                return false;
+            }
+            annot->type = type_abstract_int();
+            return true;
+        }
+
+        case BUILTIN_ALIGNOF: {
+            if (annot->annot_expr_count != 1) {
+                diag_emit(DIAG_ERROR, annot->loc, "alignof requires exactly one argument");
+                return false;
+            }
+            annot->type = type_abstract_int();
+            return true;
+        }
+
+        case BUILTIN_OFFSETOF: {
+            diag_emit(DIAG_ERROR, annot->loc, "offsetof is not yet implemented (requires struct support)");
+            return false;
+        }
+
+        case BUILTIN_TYPEOF: {
+            diag_emit(DIAG_ERROR, annot->loc, "typeof is not yet implemented (requires struct support)");
+            return false;
+        }
+
+        case BUILTIN_TYPESTR: {
+            if (annot->annot_expr_count != 1) {
+                diag_emit(DIAG_ERROR, annot->loc, "typestr requires exactly one argument");
+                return false;
+            }
+            Type* u8    = type_number(TYPE_INT, 8, true);
+            annot->type = type_ptr(u8, true, false);
+            return true;
+        }
+
+        case BUILTIN_TIME: {
+            if (annot->annot_expr_count != 1) {
+                diag_emit(DIAG_ERROR, annot->loc, "#time requires exactly one format string argument");
+                return false;
+            }
+
+            AstNode* fmt_arg = annot->annot_exprs[0];
+            if (fmt_arg->kind == AST_IDENT) {
+                diag_emit(
+                    DIAG_ERROR,
+                    fmt_arg->loc,
+                    "#time with a identifier argument is not supported; use a string literal instead"
+                );
+                return false;
+            }
+            if (fmt_arg->kind != AST_STRING_LIT) {
+                diag_emit(DIAG_ERROR, fmt_arg->loc, "#time format must be a string literal");
+                return false;
+            }
+
+            check_strftime_format(fmt_arg->str, fmt_arg->len, fmt_arg->loc);
+
+            annot->type = type_ptr(type_number(TYPE_INT, 8, true), true, false);
             return true;
         }
     }

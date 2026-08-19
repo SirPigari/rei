@@ -22,6 +22,8 @@ static bool is_type_start(TokenKind kind) {
     return kind == TK_IDENT || kind == TK_STAR || kind == TK_STARSTAR || kind == TK_LBRACKET || kind == TK_BANG;
 }
 
+static AnnotationType parse_annotation_name(const char* name_str, size_t name_len);
+
 static Type* parse_type(Lexer* l) {
     Token pk = lexer_peek(l);
 
@@ -77,6 +79,7 @@ static Type* parse_type(Lexer* l) {
 }
 
 static AstNode* parse_expr(Lexer* l);
+static AnnotationType parse_annotation_name(const char* name_str, size_t name_len);
 
 static AstNode* parse_primary(Lexer* l) {
     Token    t   = lexer_peek(l);
@@ -85,7 +88,7 @@ static AstNode* parse_primary(Lexer* l) {
     if (t.kind != TK_INT_LIT && t.kind != TK_FLOAT_LIT && t.kind != TK_IDENT && t.kind != TK_STRING_LIT &&
         t.kind != TK_LBRACKET && t.kind != TK_LPAREN && t.kind != TK_MINUS && t.kind != TK_PLUS && t.kind != TK_BANG &&
         t.kind != TK_BITNOT && t.kind != TK_BITAND && t.kind != TK_STAR && t.kind != TK_PLUSPLUS &&
-        t.kind != TK_MINUSMINUS && t.kind != TK_NULLPTR) {
+        t.kind != TK_MINUSMINUS && t.kind != TK_NULLPTR && t.kind != TK_HASH) {
         diag_emit(DIAG_ERROR, loc, "expected expression, got %s", token_kind_str(t.kind));
         AstNode* n = ast_node(AST_INT_LIT, loc);
         n->ival    = 0;
@@ -147,6 +150,69 @@ static AstNode* parse_primary(Lexer* l) {
     }
     if (t.kind == TK_NULLPTR) {
         AstNode* n = ast_node(AST_NULLPTR, loc);
+        return n;
+    }
+    if (t.kind == TK_HASH) {
+        Token builtin_name_tok = expect(l, TK_IDENT);
+        
+        AstNode* n    = ast_node(AST_ANNOTATION, loc);
+        n->annot_type = parse_annotation_name(builtin_name_tok.start, builtin_name_tok.len);
+        n->annot_target = NULL;
+        
+        if (n->annot_type == (AnnotationType)-1) {
+            diag_emit(
+                DIAG_ERROR, builtin_name_tok.loc, "unknown builtin: %.*s", (int)builtin_name_tok.len, builtin_name_tok.start
+            );
+        }
+        
+        if (lexer_peek(l).kind == TK_LPAREN) {
+            lexer_next(l);
+            
+            size_t    cap   = 8;
+            size_t    count = 0;
+            AstNode** exprs = malloc(cap * sizeof(AstNode*));
+            
+            while (lexer_peek(l).kind != TK_RPAREN && lexer_peek(l).kind != TK_EOF) {
+                if (count >= cap) {
+                    cap *= 2;
+                    exprs = realloc(exprs, cap * sizeof(AstNode*));
+                }
+                
+                AstNode* expr = NULL;
+                
+                bool is_type_builtin = (n->annot_type == BUILTIN_TYPESTR || 
+                                        n->annot_type == BUILTIN_SIZEOF ||
+                                        n->annot_type == BUILTIN_ALIGNOF ||
+                                        n->annot_type == BUILTIN_OFFSETOF);
+                
+                if (is_type_builtin) {
+                    Token start_tok = lexer_peek(l);
+                    Location type_loc = start_tok.loc;
+                    Type* ty = parse_type(l);
+                    expr = ast_node(AST_TYPE_LIT, type_loc);
+                    expr->typeval = ty;
+                } else {
+                    expr = parse_expr(l);
+                }
+                
+                if (!expr) {
+                    break;
+                }
+                exprs[count++] = expr;
+                if (lexer_peek(l).kind == TK_COMMA) {
+                    lexer_next(l);
+                }
+            }
+            
+            n->annot_exprs = exprs;
+            n->annot_expr_count = count;
+            
+            expect(l, TK_RPAREN);
+        } else {
+            n->annot_exprs = NULL;
+            n->annot_expr_count = 0;
+        }
+        
         return n;
     }
 
@@ -704,7 +770,8 @@ static AstNode* parse_func_decl(Lexer* l, Token name_tok) {
 
     bool is_variadic = false;
     parse_params(l, &n->params, &n->param_count, &is_variadic);
-    if (is_variadic) FUNC_SET_FLAG(n, FUNC_FLAG_VARIADIC);
+    if (is_variadic)
+        FUNC_SET_FLAG(n, FUNC_FLAG_VARIADIC);
 
     expect(l, TK_RPAREN);
 
@@ -748,7 +815,8 @@ static AstNode* parse_one_extern(Lexer* l) {
     FUNC_SET_FLAG(n, FUNC_FLAG_EXTERN);
     bool is_variadic = false;
     parse_params(l, &n->params, &n->param_count, &is_variadic);
-    if (is_variadic) FUNC_SET_FLAG(n, FUNC_FLAG_VARIADIC);
+    if (is_variadic)
+        FUNC_SET_FLAG(n, FUNC_FLAG_VARIADIC);
     expect(l, TK_RPAREN);
 
     Token next = lexer_peek(l);
@@ -785,6 +853,20 @@ static AnnotationType parse_annotation_name(const char* name_str, size_t name_le
         return ANNOT_SENTINEL;
     if (name_len == 9 && memcmp(name_str, "link_name", 9) == 0)
         return ANNOT_LINK_NAME;
+    
+    if (name_len == 6 && memcmp(name_str, "sizeof", 6) == 0)
+        return BUILTIN_SIZEOF;
+    if (name_len == 7 && memcmp(name_str, "alignof", 7) == 0)
+        return BUILTIN_ALIGNOF;
+    if (name_len == 8 && memcmp(name_str, "offsetof", 8) == 0)
+        return BUILTIN_OFFSETOF;
+    if (name_len == 6 && memcmp(name_str, "typeof", 6) == 0)
+        return BUILTIN_TYPEOF;
+    if (name_len == 7 && memcmp(name_str, "typestr", 7) == 0)
+        return BUILTIN_TYPESTR;
+    if (name_len == 4 && memcmp(name_str, "time", 4) == 0)
+        return BUILTIN_TIME;
+    
     return (AnnotationType)-1; /* unknown */
 }
 
@@ -841,7 +923,30 @@ static AstNode* parse_annotation(Lexer* l) {
                 cap *= 2;
                 exprs = realloc(exprs, cap * sizeof(AstNode*));
             }
-            AstNode* expr = parse_expr(l);
+            
+            AstNode* expr = NULL;
+            
+            bool is_type_annotation = (n->annot_type == BUILTIN_TYPESTR || 
+                                       n->annot_type == BUILTIN_SIZEOF ||
+                                       n->annot_type == BUILTIN_ALIGNOF ||
+                                       n->annot_type == BUILTIN_OFFSETOF);
+            
+            if (is_type_annotation) {
+                Token start_tok = lexer_peek(l);
+                Location loc = start_tok.loc;
+                Type* ty = parse_type(l);
+                expr = ast_node(AST_TYPE_LIT, loc);
+                expr->typeval = ty;
+                
+                Token end_tok = lexer_peek(l);
+                if (end_tok.start == start_tok.start && end_tok.kind != TK_COMMA && 
+                    end_tok.kind != TK_RPAREN && end_tok.kind != TK_EOF) {
+                    lexer_next(l);
+                }
+            } else {
+                expr = parse_expr(l);
+            }
+            
             if (!expr) {
                 break;
             }
@@ -954,7 +1059,8 @@ Module* parse(Lexer* l) {
                     expect(l, TK_LPAREN);
                     bool is_variadic = false;
                     parse_params(l, &decl->params, &decl->param_count, &is_variadic);
-                    if (is_variadic) FUNC_SET_FLAG(decl, FUNC_FLAG_VARIADIC);
+                    if (is_variadic)
+                        FUNC_SET_FLAG(decl, FUNC_FLAG_VARIADIC);
                     expect(l, TK_RPAREN);
 
                     Token arrow_check = lexer_peek(l);
