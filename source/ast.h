@@ -38,6 +38,14 @@ typedef struct Type {
             unsigned is_size     : 1;
         } int_type;
         struct {
+            unsigned is_abstract        : 1;
+            unsigned is_unsigned        : 1;
+            unsigned is_canonical_zero  : 1;
+            unsigned is_canonical       : 1;
+            unsigned is_size            : 1;
+            unsigned is_explicit_suffix : 1;
+        } float_type;
+        struct {
             unsigned is_fat   : 1;
             unsigned non_null : 1;
             Type*    elem_type;
@@ -60,6 +68,10 @@ Type* type_ptr(Type* elem, bool is_fat, bool non_null);
 Type* type_array(Type* elem, size_t len);
 Type* type_abstract_int(void);
 Type* type_abstract_float(void);
+Type* type_abstract_ieee_float(void);
+Type* type_unsigned_float(uint16_t bits);
+Type* type_canonical_zero_float(uint16_t bits);
+Type* type_canonical_float(uint16_t bits);
 Type* type_ident(const char* name);
 
 typedef enum {

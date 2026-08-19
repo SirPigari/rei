@@ -1,5 +1,6 @@
 #include "parser.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,7 +79,7 @@ static Type* parse_type(Lexer* l) {
     return type_ident(tok_str(t));
 }
 
-static AstNode* parse_expr(Lexer* l);
+static AstNode*       parse_expr(Lexer* l);
 static AnnotationType parse_annotation_name(const char* name_str, size_t name_len);
 
 static AstNode* parse_primary(Lexer* l) {
@@ -110,8 +111,28 @@ static AstNode* parse_primary(Lexer* l) {
     if (t.kind == TK_FLOAT_LIT) {
         AstNode* n = ast_node(AST_FLOAT_LIT, loc);
         n->fval    = t.fval;
-        if (t.suffix[0] == 'f')
-            n->type = type_number(TYPE_FLOAT, atoi(t.suffix + 1), 0);
+        if (t.suffix[0]) {
+            if (t.suffix[0] == 'u' && t.suffix[1] == 'f') {
+                int bits = atoi(t.suffix + 2);
+                n->type  = type_unsigned_float(bits);
+            } else if (t.suffix[0] == 'f' && t.suffix[1] == 'f') {
+                int bits = atoi(t.suffix + 2);
+                n->type  = type_canonical_zero_float(bits);
+            } else if (t.suffix[0] == 'c' && t.suffix[1] == 'f') {
+                int bits = atoi(t.suffix + 2);
+                n->type  = type_canonical_float(bits);
+            } else if (t.suffix[0] == 'f') {
+                if (t.suffix[1] == '\0') {
+                    n->type = type_abstract_ieee_float();
+                } else if (isdigit(t.suffix[1])) {
+                    int bits = atoi(t.suffix + 1);
+                    n->type  = type_number(TYPE_FLOAT, bits, 0);
+                }
+            } else if (t.suffix[0] == 'u' && isdigit(t.suffix[1])) {
+            }
+        } else {
+            n->type = type_abstract_float();
+        }
         return n;
     }
     if (t.kind == TK_IDENT) {
@@ -154,47 +175,50 @@ static AstNode* parse_primary(Lexer* l) {
     }
     if (t.kind == TK_HASH) {
         Token builtin_name_tok = expect(l, TK_IDENT);
-        
-        AstNode* n    = ast_node(AST_ANNOTATION, loc);
-        n->annot_type = parse_annotation_name(builtin_name_tok.start, builtin_name_tok.len);
+
+        AstNode* n      = ast_node(AST_ANNOTATION, loc);
+        n->annot_type   = parse_annotation_name(builtin_name_tok.start, builtin_name_tok.len);
         n->annot_target = NULL;
-        
+
         if (n->annot_type == (AnnotationType)-1) {
             diag_emit(
-                DIAG_ERROR, builtin_name_tok.loc, "unknown builtin: %.*s", (int)builtin_name_tok.len, builtin_name_tok.start
+                DIAG_ERROR,
+                builtin_name_tok.loc,
+                "unknown builtin: %.*s",
+                (int)builtin_name_tok.len,
+                builtin_name_tok.start
             );
         }
-        
+
         if (lexer_peek(l).kind == TK_LPAREN) {
             lexer_next(l);
-            
+
             size_t    cap   = 8;
             size_t    count = 0;
             AstNode** exprs = malloc(cap * sizeof(AstNode*));
-            
+
             while (lexer_peek(l).kind != TK_RPAREN && lexer_peek(l).kind != TK_EOF) {
                 if (count >= cap) {
                     cap *= 2;
                     exprs = realloc(exprs, cap * sizeof(AstNode*));
                 }
-                
+
                 AstNode* expr = NULL;
-                
-                bool is_type_builtin = (n->annot_type == BUILTIN_TYPESTR || 
-                                        n->annot_type == BUILTIN_SIZEOF ||
-                                        n->annot_type == BUILTIN_ALIGNOF ||
-                                        n->annot_type == BUILTIN_OFFSETOF);
-                
+
+                bool is_type_builtin =
+                    (n->annot_type == BUILTIN_TYPESTR || n->annot_type == BUILTIN_SIZEOF ||
+                     n->annot_type == BUILTIN_ALIGNOF || n->annot_type == BUILTIN_OFFSETOF);
+
                 if (is_type_builtin) {
-                    Token start_tok = lexer_peek(l);
-                    Location type_loc = start_tok.loc;
-                    Type* ty = parse_type(l);
-                    expr = ast_node(AST_TYPE_LIT, type_loc);
-                    expr->typeval = ty;
+                    Token    start_tok = lexer_peek(l);
+                    Location type_loc  = start_tok.loc;
+                    Type*    ty        = parse_type(l);
+                    expr               = ast_node(AST_TYPE_LIT, type_loc);
+                    expr->typeval      = ty;
                 } else {
                     expr = parse_expr(l);
                 }
-                
+
                 if (!expr) {
                     break;
                 }
@@ -203,16 +227,16 @@ static AstNode* parse_primary(Lexer* l) {
                     lexer_next(l);
                 }
             }
-            
-            n->annot_exprs = exprs;
+
+            n->annot_exprs      = exprs;
             n->annot_expr_count = count;
-            
+
             expect(l, TK_RPAREN);
         } else {
-            n->annot_exprs = NULL;
+            n->annot_exprs      = NULL;
             n->annot_expr_count = 0;
         }
-        
+
         return n;
     }
 
@@ -853,7 +877,7 @@ static AnnotationType parse_annotation_name(const char* name_str, size_t name_le
         return ANNOT_SENTINEL;
     if (name_len == 9 && memcmp(name_str, "link_name", 9) == 0)
         return ANNOT_LINK_NAME;
-    
+
     if (name_len == 6 && memcmp(name_str, "sizeof", 6) == 0)
         return BUILTIN_SIZEOF;
     if (name_len == 7 && memcmp(name_str, "alignof", 7) == 0)
@@ -866,7 +890,7 @@ static AnnotationType parse_annotation_name(const char* name_str, size_t name_le
         return BUILTIN_TYPESTR;
     if (name_len == 4 && memcmp(name_str, "time", 4) == 0)
         return BUILTIN_TIME;
-    
+
     return (AnnotationType)-1; /* unknown */
 }
 
@@ -923,30 +947,29 @@ static AstNode* parse_annotation(Lexer* l) {
                 cap *= 2;
                 exprs = realloc(exprs, cap * sizeof(AstNode*));
             }
-            
+
             AstNode* expr = NULL;
-            
-            bool is_type_annotation = (n->annot_type == BUILTIN_TYPESTR || 
-                                       n->annot_type == BUILTIN_SIZEOF ||
-                                       n->annot_type == BUILTIN_ALIGNOF ||
-                                       n->annot_type == BUILTIN_OFFSETOF);
-            
+
+            bool is_type_annotation =
+                (n->annot_type == BUILTIN_TYPESTR || n->annot_type == BUILTIN_SIZEOF ||
+                 n->annot_type == BUILTIN_ALIGNOF || n->annot_type == BUILTIN_OFFSETOF);
+
             if (is_type_annotation) {
-                Token start_tok = lexer_peek(l);
-                Location loc = start_tok.loc;
-                Type* ty = parse_type(l);
-                expr = ast_node(AST_TYPE_LIT, loc);
-                expr->typeval = ty;
-                
+                Token    start_tok = lexer_peek(l);
+                Location loc       = start_tok.loc;
+                Type*    ty        = parse_type(l);
+                expr               = ast_node(AST_TYPE_LIT, loc);
+                expr->typeval      = ty;
+
                 Token end_tok = lexer_peek(l);
-                if (end_tok.start == start_tok.start && end_tok.kind != TK_COMMA && 
-                    end_tok.kind != TK_RPAREN && end_tok.kind != TK_EOF) {
+                if (end_tok.start == start_tok.start && end_tok.kind != TK_COMMA && end_tok.kind != TK_RPAREN &&
+                    end_tok.kind != TK_EOF) {
                     lexer_next(l);
                 }
             } else {
                 expr = parse_expr(l);
             }
-            
+
             if (!expr) {
                 break;
             }

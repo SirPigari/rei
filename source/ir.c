@@ -30,8 +30,7 @@ static IrInstr* emit(IrFunc* f) {
 
 static int intern_string(IrModule* m, const char* data, size_t len, StrPrefixFlags flags) {
     for (int i = 0; i < m->str_count; i++) {
-        if (m->strings[i].len == len &&
-            memcmp(m->strings[i].data, data, len) == 0) {
+        if (m->strings[i].len == len && memcmp(m->strings[i].data, data, len) == 0) {
             return i;
         }
     }
@@ -427,19 +426,6 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                     }
                 }
 
-                if (arg_type && arg_type->kind == TYPE_FLOAT &&
-                    (arg_type->bits == 32 || arg_type->int_type.is_abstract)) {
-                    Type*    f64_type    = type_number(TYPE_FLOAT, 64, 0);
-                    IrInstr* cast        = emit(f);
-                    cast->op             = IR_CAST;
-                    cast->dst            = next_val(f);
-                    cast->type           = f64_type;
-                    cast->cast_src       = v;
-                    cast->cast_from_type = arg_type;
-                    v                    = cast->dst;
-                    arg_type             = f64_type;
-                }
-
                 arg_vals[a]  = v;
                 arg_types[a] = arg_type;
             }
@@ -458,19 +444,6 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                         ICE("default argument lowered to IR_NO_VAL");
 
                     Type* arg_type = default_expr->type;
-
-                    if (arg_type && arg_type->kind == TYPE_FLOAT &&
-                        (arg_type->bits == 32 || arg_type->int_type.is_abstract)) {
-                        Type*    f64_type    = type_number(TYPE_FLOAT, 64, 0);
-                        IrInstr* cast        = emit(f);
-                        cast->op             = IR_CAST;
-                        cast->dst            = next_val(f);
-                        cast->type           = f64_type;
-                        cast->cast_src       = v;
-                        cast->cast_from_type = arg_type;
-                        v                    = cast->dst;
-                        arg_type             = f64_type;
-                    }
 
                     arg_vals[a]  = v;
                     arg_types[a] = arg_type;

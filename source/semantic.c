@@ -4,6 +4,7 @@
 #include "diagnostics.h"
 #include "lexer.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,7 +28,15 @@ static bool types_equal(Type* a, Type* b) {
             bool result = a->bits == b->bits && a->int_type.is_unsigned == b->int_type.is_unsigned;
             return result;
         case TYPE_FLOAT:
-            if (a->int_type.is_size != b->int_type.is_size)
+            if (a->float_type.is_size != b->float_type.is_size)
+                return false;
+            if (a->float_type.is_abstract != b->float_type.is_abstract)
+                return false;
+            if (a->float_type.is_unsigned != b->float_type.is_unsigned)
+                return false;
+            if (a->float_type.is_canonical_zero != b->float_type.is_canonical_zero)
+                return false;
+            if (a->float_type.is_canonical != b->float_type.is_canonical)
                 return false;
             return a->bits == b->bits;
         case TYPE_PTR:
@@ -52,7 +61,15 @@ static bool is_abstract_int(Type* t) {
 }
 
 static bool is_abstract_float(Type* t) {
-    return t && t->kind == TYPE_FLOAT && t->int_type.is_abstract;
+    return t && t->kind == TYPE_FLOAT && t->float_type.is_abstract;
+}
+
+static bool is_abstract_float_with_suffix(Type* t) {
+    return t && t->kind == TYPE_FLOAT && t->float_type.is_abstract && t->float_type.is_explicit_suffix;
+}
+
+static bool is_abstract_float_plain(Type* t) {
+    return t && t->kind == TYPE_FLOAT && t->float_type.is_abstract && !t->float_type.is_explicit_suffix;
 }
 
 static char* type_str(Type* t, char* buf, size_t cap) {
@@ -78,7 +95,15 @@ static char* type_str(Type* t, char* buf, size_t cap) {
             break;
         }
         case TYPE_FLOAT: {
-            if (t->int_type.is_size) {
+            if (t->float_type.is_canonical) {
+                snprintf(buf, cap, "cf%d", t->bits ? t->bits : 64);
+            } else if (t->float_type.is_canonical_zero) {
+                snprintf(buf, cap, "ff%d", t->bits ? t->bits : 64);
+            } else if (t->float_type.is_unsigned) {
+                snprintf(buf, cap, "uf%d", t->bits ? t->bits : 64);
+            } else if (t->float_type.is_abstract) {
+                snprintf(buf, cap, "f<abstract>");
+            } else if (t->float_type.is_size) {
                 snprintf(buf, cap, "fsize");
             } else {
                 snprintf(buf, cap, "f%d", t->bits ? t->bits : 64);
@@ -322,6 +347,293 @@ static bool types_assignable(Type* actual, Type* expected) {
     return false;
 }
 
+static bool is_abstract_ieee_float(Type* t) {
+    return t && t->kind == TYPE_FLOAT && t->float_type.is_abstract && t->float_type.is_explicit_suffix &&
+           !t->float_type.is_unsigned && !t->float_type.is_canonical_zero && !t->float_type.is_canonical;
+}
+
+static bool is_concrete_float(Type* t) {
+    return t && t->kind == TYPE_FLOAT && !t->float_type.is_abstract;
+}
+
+static bool is_ieee_float(Type* t) {
+    return t && t->kind == TYPE_FLOAT && !t->float_type.is_unsigned && !t->float_type.is_canonical_zero &&
+           !t->float_type.is_canonical;
+}
+
+static bool is_unsigned_float(Type* t) {
+    return t && t->kind == TYPE_FLOAT && t->float_type.is_unsigned;
+}
+
+static bool is_canonical_float(Type* t) {
+    return t && t->kind == TYPE_FLOAT && t->float_type.is_canonical;
+}
+
+static bool is_canonical_zero_float(Type* t) {
+    return t && t->kind == TYPE_FLOAT && t->float_type.is_canonical_zero;
+}
+
+static bool types_assignable_with_warning(Type* actual, Type* expected, Location loc) {
+    if (actual && actual->kind == TYPE_FLOAT && expected && expected->kind == TYPE_FLOAT) {
+        if (is_concrete_float(actual) && is_ieee_float(actual) && is_unsigned_float(expected)) {
+            return false;
+        }
+
+        if (is_concrete_float(actual) && is_concrete_float(expected) && !types_equal(actual, expected)) {
+            return false;
+        }
+
+        if (is_abstract_float_plain(actual)) {
+            return true;
+        }
+
+        if (is_abstract_float_with_suffix(actual)) {
+            bool target_is_ieee = is_concrete_float(expected) && !is_unsigned_float(expected) &&
+                                  !is_canonical_zero_float(expected) && !is_canonical_float(expected);
+
+            if (!target_is_ieee && !types_equal(actual, expected)) {
+                char as[64], es[64];
+                diag_emit(
+                    DIAG_WARN,
+                    loc,
+                    "assigning %s to %s",
+                    type_str(actual, as, sizeof(as)),
+                    type_str(expected, es, sizeof(es))
+                );
+            }
+            return true;
+        }
+    }
+
+    if (types_assignable(actual, expected))
+        return true;
+
+    return false;
+}
+
+static bool eval_const_int(AstNode* expr, long long* out_val) {
+    if (!expr)
+        return false;
+
+    if (expr->kind == AST_INT_LIT) {
+        *out_val = expr->ival;
+        return true;
+    }
+
+    if (expr->kind == AST_UNOP) {
+        long long val;
+        if (!eval_const_int(expr->operand, &val))
+            return false;
+
+        switch (expr->uop) {
+            case UOP_NEG:
+                *out_val = -val;
+                return true;
+            case UOP_POS:
+                *out_val = val;
+                return true;
+            case UOP_NOT:
+                *out_val = !val;
+                return true;
+            case UOP_BITNOT:
+                *out_val = ~val;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    if (expr->kind == AST_BINOP) {
+        long long lhs, rhs;
+        if (!eval_const_int(expr->lhs, &lhs) || !eval_const_int(expr->rhs, &rhs)) {
+            return false;
+        }
+
+        switch (expr->op) {
+            case OP_ADD:
+                *out_val = lhs + rhs;
+                return true;
+            case OP_SUB:
+                *out_val = lhs - rhs;
+                return true;
+            case OP_MUL:
+                *out_val = lhs * rhs;
+                return true;
+            case OP_DIV:
+                if (rhs == 0)
+                    return false;
+                *out_val = lhs / rhs;
+                return true;
+            case OP_MOD:
+                if (rhs == 0)
+                    return false;
+                *out_val = lhs % rhs;
+                return true;
+            case OP_SHL:
+                *out_val = lhs << rhs;
+                return true;
+            case OP_SHR:
+                *out_val = lhs >> rhs;
+                return true;
+            case OP_BITAND:
+                *out_val = lhs & rhs;
+                return true;
+            case OP_BITOR:
+                *out_val = lhs | rhs;
+                return true;
+            case OP_BITXOR:
+                *out_val = lhs ^ rhs;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    return false;
+}
+
+static bool eval_const_float(AstNode* expr, double* out_val) {
+    if (!expr)
+        return false;
+
+    if (expr->kind == AST_FLOAT_LIT) {
+        *out_val = expr->fval;
+        return true;
+    }
+
+    if (expr->kind == AST_UNOP) {
+        double val;
+        if (!eval_const_float(expr->operand, &val))
+            return false;
+
+        switch (expr->uop) {
+            case UOP_NEG:
+                *out_val = -val;
+                return true;
+            case UOP_POS:
+                *out_val = val;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    if (expr->kind == AST_BINOP) {
+        double lhs, rhs;
+        if (!eval_const_float(expr->lhs, &lhs) || !eval_const_float(expr->rhs, &rhs)) {
+            return false;
+        }
+
+        switch (expr->op) {
+            case OP_ADD:
+                *out_val = lhs + rhs;
+                return true;
+            case OP_SUB:
+                *out_val = lhs - rhs;
+                return true;
+            case OP_MUL:
+                *out_val = lhs * rhs;
+                return true;
+            case OP_DIV:
+                if (rhs == 0.0)
+                    return false;
+                *out_val = lhs / rhs;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    return false;
+}
+
+static bool types_assignable_with_value_check(AstNode* expr, Type* actual, Type* expected, Location loc) {
+    if (!types_assignable_with_warning(actual, expected, loc)) {
+        return false;
+    }
+
+    if (actual && actual->kind == TYPE_INT && expected && expected->kind == TYPE_INT && expr) {
+        long long val;
+        if (eval_const_int(expr, &val)) {
+            if (expected->bits > 0) {
+                if (expected->int_type.is_unsigned) {
+                    if (expected->bits < 64) {
+                        unsigned long long max_val = (1ULL << expected->bits) - 1;
+                        if (val < 0 || (unsigned long long)val > max_val) {
+                            diag_emit(
+                                DIAG_ERROR,
+                                loc,
+                                "value %lld does not fit in u%d (range 0 to %llu)",
+                                val,
+                                expected->bits,
+                                max_val
+                            );
+                            return false;
+                        }
+                    }
+                } else {
+                    if (expected->bits < 64) {
+                        long long min_val = -(1LL << (expected->bits - 1));
+                        long long max_val = (1LL << (expected->bits - 1)) - 1;
+                        if (val < min_val || val > max_val) {
+                            diag_emit(
+                                DIAG_ERROR,
+                                loc,
+                                "value %lld does not fit in i%d (range %lld to %lld)",
+                                val,
+                                expected->bits,
+                                min_val,
+                                max_val
+                            );
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (is_unsigned_float(expected)) {
+        double fval;
+        if (eval_const_float(expr, &fval)) {
+            if (fval < 0.0) {
+                diag_emit(DIAG_ERROR, loc, "cannot assign negative value %.17g to unsigned float type", fval);
+                return false;
+            }
+        }
+    }
+
+    if (is_canonical_float(expected)) {
+        double fval;
+        if (eval_const_float(expr, &fval)) {
+            if (isnan(fval)) {
+                diag_emit(DIAG_ERROR, loc, "cannot assign NaN to canonical float type (no special values allowed)");
+                return false;
+            }
+            if (isinf(fval)) {
+                diag_emit(
+                    DIAG_ERROR, loc, "cannot assign Infinity to canonical float type (no special values allowed)"
+                );
+                return false;
+            }
+            if (fval == 0.0 && signbit(fval)) {
+                diag_emit(DIAG_WARN, loc, "assigning -0.0 to canonical float; will be converted to +0.0");
+            }
+        }
+    }
+
+    if (is_canonical_zero_float(expected)) {
+        double fval;
+        if (eval_const_float(expr, &fval)) {
+            if (fval == 0.0 && signbit(fval)) {
+                diag_emit(DIAG_WARN, loc, "assigning -0.0 to canonical-zero float; will be converted to +0.0");
+            }
+        }
+    }
+
+    return true;
+}
+
 static Type* resolve_abstract_from_printf_spec(Type* t, char spec, char length_mod) {
     if (!t)
         return t;
@@ -359,7 +671,7 @@ static Type* resolve_abstract_from_printf_spec(Type* t, char spec, char length_m
         }
     }
 
-    if (t->kind == TYPE_FLOAT && t->int_type.is_abstract) {
+    if (t->kind == TYPE_FLOAT && t->float_type.is_abstract) {
         switch (spec) {
             case 'f':
             case 'F':
@@ -440,7 +752,7 @@ static bool type_matches_printf_spec(Type* t, char spec, char length_mod) {
         case 'G':
             if (t->kind != TYPE_FLOAT)
                 return false;
-            if (t->int_type.is_abstract)
+            if (t->float_type.is_abstract)
                 return true;
             switch (length_mod) {
                 case 'l':
@@ -918,6 +1230,39 @@ static Type* expr_ident_to_type(const char* name) {
     if (strcmp(name, "void") == 0)
         return type_void();
 
+    if (name[0] == 'u' && name[1] == 'f') {
+        const char* rest = name + 2;
+        if (strcmp(rest, "size") == 0) {
+            Type* t                   = calloc(1, sizeof(*t));
+            t->kind                   = TYPE_FLOAT;
+            t->bits                   = 0;
+            t->float_type.is_unsigned = true;
+            t->float_type.is_size     = true;
+            return t;
+        }
+        char* endptr;
+        long  bits = strtol(rest, &endptr, 10);
+        if (*endptr == '\0' && bits > 0 && bits <= 65535) {
+            return type_unsigned_float((uint16_t)bits);
+        }
+    }
+    if (name[0] == 'f' && name[1] == 'f') {
+        const char* rest = name + 2;
+        char*       endptr;
+        long        bits = strtol(rest, &endptr, 10);
+        if (*endptr == '\0' && bits > 0 && bits <= 65535) {
+            return type_canonical_zero_float((uint16_t)bits);
+        }
+    }
+    if (name[0] == 'c' && name[1] == 'f') {
+        const char* rest = name + 2;
+        char*       endptr;
+        long        bits = strtol(rest, &endptr, 10);
+        if (*endptr == '\0' && bits > 0 && bits <= 65535) {
+            return type_canonical_float((uint16_t)bits);
+        }
+    }
+
     if (name[0] == 'i' || name[0] == 's' || name[0] == 'u' || name[0] == 'f') {
         char        prefix = name[0];
         const char* rest   = name + 1;
@@ -928,8 +1273,10 @@ static Type* expr_ident_to_type(const char* name) {
             else if (prefix == 'u')
                 return type_number(TYPE_INT, 0, 1);
             else if (prefix == 'f') {
-                Type* t             = type_number(TYPE_FLOAT, 0, 0);
-                t->int_type.is_size = true;
+                Type* t               = calloc(1, sizeof(*t));
+                t->kind               = TYPE_FLOAT;
+                t->bits               = 0;
+                t->float_type.is_size = true;
                 return t;
             }
             return NULL;
@@ -1035,14 +1382,19 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
             }
             return e->type;
 
-        case AST_FLOAT_LIT:
-            if (!e->type) {
-                if (hint && hint->kind == TYPE_FLOAT)
+        case AST_FLOAT_LIT: {
+            bool is_abstract = !e->type || (e->type && e->type->kind == TYPE_FLOAT && e->type->float_type.is_abstract &&
+                                            !e->type->float_type.is_explicit_suffix);
+
+            if (is_abstract) {
+                if (hint && hint->kind == TYPE_FLOAT) {
                     e->type = hint;
-                else
+                } else if (!e->type) {
                     e->type = type_abstract_float();
+                }
             }
             return e->type;
+        }
 
         case AST_STRING_LIT: {
             if (!e->type) {
@@ -1556,7 +1908,14 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
         }
 
         case AST_UNOP: {
-            Type* t = check_expr(e->operand, sc);
+            Type* t;
+            if ((e->uop == UOP_NEG || e->uop == UOP_POS) && hint && hint->kind == TYPE_FLOAT) {
+                t = check_expr_hint(e->operand, sc, hint);
+            } else if ((e->uop == UOP_NEG || e->uop == UOP_POS) && hint && hint->kind == TYPE_INT) {
+                t = check_expr_hint(e->operand, sc, hint);
+            } else {
+                t = check_expr(e->operand, sc);
+            }
 
             switch (e->uop) {
                 case UOP_DEREF:
@@ -1719,7 +2078,8 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
             if (e->cast_type == NULL) {
                 e->type = hint;
             } else {
-                e->type = resolve_type(e->cast_type, sc);
+                e->type      = resolve_type(e->cast_type, sc);
+                e->cast_type = e->type;
 
                 if (e->type && e->type->kind == TYPE_PTR && e->type->ptr_type.elem_type) {
                     if (e->type->ptr_type.elem_type->kind == TYPE_IDENT) {
@@ -1837,10 +2197,10 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
                     if (arg->kind == AST_TYPE_LIT && arg->typeval) {
                         arg_type = arg->typeval;
-                        
+
                         if (arg_type->kind == TYPE_IDENT) {
                             const char* ident_name = arg_type->ident_type.name;
-                            Type* resolved = expr_ident_to_type(ident_name);
+                            Type*       resolved   = expr_ident_to_type(ident_name);
                             if (resolved) {
                                 arg_type = resolved;
                             } else {
@@ -1880,10 +2240,10 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
                     if (arg->kind == AST_TYPE_LIT && arg->typeval) {
                         arg_type = arg->typeval;
-                        
+
                         if (arg_type->kind == TYPE_IDENT) {
                             const char* ident_name = arg_type->ident_type.name;
-                            Type* resolved = expr_ident_to_type(ident_name);
+                            Type*       resolved   = expr_ident_to_type(ident_name);
                             if (resolved) {
                                 arg_type = resolved;
                             } else {
@@ -1903,7 +2263,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     if (!arg_type)
                         return ERROR_TYPE;
 
-                    int align = 8; /* TODO: actuall alignment */
+                    int align = 8; /* TODO: actual alignment */
                     if (arg_type->kind == TYPE_INT || arg_type->kind == TYPE_FLOAT) {
                         align = arg_type->bits / 8;
                         if (align == 0)
@@ -1925,10 +2285,10 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
                     if (arg->kind == AST_TYPE_LIT && arg->typeval) {
                         arg_type = arg->typeval;
-                        
+
                         if (arg_type->kind == TYPE_IDENT) {
                             const char* ident_name = arg_type->ident_type.name;
-                            Type* resolved = expr_ident_to_type(ident_name);
+                            Type*       resolved   = expr_ident_to_type(ident_name);
                             if (resolved) {
                                 arg_type = resolved;
                             } else {
@@ -1956,10 +2316,10 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
 
                     Type* u8 = type_number(TYPE_INT, 8, true);
                     if (hint && hint->kind == TYPE_PTR && !hint->ptr_type.is_fat) {
-                        e->type = type_ptr(u8, false, false); /* *u8 */
+                        e->type      = type_ptr(u8, false, false); /* *u8 */
                         e->str_flags = STR_PREFIX_C;
                     } else {
-                        e->type = type_ptr(u8, true, false);  /* []u8 */
+                        e->type      = type_ptr(u8, true, false); /* []u8 */
                         e->str_flags = 0;
                     }
                     return e->type;
@@ -1974,7 +2334,7 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                         timeinit   = true;
                     }
                     char* time_buf = malloc(256);
-                    
+
                     if (e->annot_expr_count == 1) {
                         AstNode* fmt_arg = e->annot_exprs[0];
                         if (fmt_arg->kind == AST_STRING_LIT) {
@@ -1986,16 +2346,16 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                         strftime(time_buf, 256, "%Y-%m-%dT%H:%M:%SZ", timeinfo);
                     }
 
-                    e->kind      = AST_STRING_LIT;
-                    e->len       = strlen(time_buf);
-                    e->str       = time_buf;
+                    e->kind = AST_STRING_LIT;
+                    e->len  = strlen(time_buf);
+                    e->str  = time_buf;
 
                     Type* u8 = type_number(TYPE_INT, 8, true);
                     if (hint && hint->kind == TYPE_PTR && !hint->ptr_type.is_fat) {
-                        e->type = type_ptr(u8, false, false); /* *u8 */
+                        e->type      = type_ptr(u8, false, false); /* *u8 */
                         e->str_flags = STR_PREFIX_C;
                     } else {
-                        e->type = type_ptr(u8, true, false);  /* []u8 */
+                        e->type      = type_ptr(u8, true, false); /* []u8 */
                         e->str_flags = 0;
                     }
                     return e->type;
@@ -2178,6 +2538,8 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                         it          = s->var_type;
                     }
 
+                    types_assignable_with_value_check(s->init, it, s->var_type, s->init->loc);
+
                     if (!types_compatible_with_decay(it, s->var_type) && !types_assignable(it, s->var_type) &&
                         !is_error_type(it)) {
                         char is[64], vs[64];
@@ -2212,6 +2574,20 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                 ICE("variable declaration '%s' requires either a type annotation or an initializer", s->var_name);
                 scope_type = type_void();
             }
+
+            if (s->var_type && !is_error_type(s->var_type)) {
+                int bytes = type_bytes(s->var_type);
+                if (bytes > 8) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->loc,
+                        "variable '%s': type size %d bytes exceeds maximum of 8 bytes",
+                        s->var_name,
+                        bytes
+                    );
+                }
+            }
+
             s->type               = s->var_type;
             SymbolEntry* existing = scope_lookup(sc, s->var_name);
             if (existing && existing->decl != NULL) {
@@ -2245,7 +2621,8 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                     it          = s->var_type;
                 }
 
-                if (it && !types_equal(it, s->var_type) && !types_assignable(it, s->var_type)) {
+                if (it && !types_equal(it, s->var_type) &&
+                    !types_assignable_with_value_check(s->init, it, s->var_type, s->init->loc)) {
                     char is[64], vs[64];
                     diag_emit(
                         DIAG_ERROR,
@@ -2279,7 +2656,8 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                     break;
                 }
                 Type* vt = check_expr_hint(s->assign_value, sc, sym->type);
-                if (!types_equal(sym->type, vt) && !types_assignable(vt, sym->type)) {
+                if (!types_equal(sym->type, vt) &&
+                    !types_assignable_with_value_check(s->assign_value, vt, sym->type, s->assign_value->loc)) {
                     char ss[64], vs[64];
                     diag_emit(
                         DIAG_ERROR,

@@ -6,20 +6,27 @@
 #include <string.h>
 
 Type* type_number(TypeKind k, uint16_t bits, bool is_unsigned) {
-    Type* t                 = calloc(1, sizeof(*t));
-    t->kind                 = k;
-    t->bits                 = bits;
-    t->int_type.is_unsigned = is_unsigned;
+    Type* t = calloc(1, sizeof(*t));
+    t->kind = k;
+    t->bits = bits;
+    if (k != TYPE_FLOAT) {
+        t->int_type.is_unsigned = is_unsigned;
+    }
     return t;
 }
 
 Type* type_number_with_flag(TypeKind k, uint16_t bits, bool is_unsigned, bool is_abstract, bool is_size) {
-    Type* t                 = calloc(1, sizeof(*t));
-    t->kind                 = k;
-    t->bits                 = bits;
-    t->int_type.is_unsigned = is_unsigned;
-    t->int_type.is_abstract = is_abstract;
-    t->int_type.is_size     = is_size;
+    Type* t = calloc(1, sizeof(*t));
+    t->kind = k;
+    t->bits = bits;
+    if (k == TYPE_FLOAT) {
+        t->float_type.is_abstract = is_abstract;
+        t->float_type.is_size     = is_size;
+    } else {
+        t->int_type.is_unsigned = is_unsigned;
+        t->int_type.is_abstract = is_abstract;
+        t->int_type.is_size     = is_size;
+    }
     return t;
 }
 
@@ -33,10 +40,20 @@ Type* type_abstract_int(void) {
 }
 
 Type* type_abstract_float(void) {
-    Type* t                 = calloc(1, sizeof(*t));
-    t->kind                 = TYPE_FLOAT;
-    t->bits                 = 0;
-    t->int_type.is_abstract = true;
+    Type* t                          = calloc(1, sizeof(*t));
+    t->kind                          = TYPE_FLOAT;
+    t->bits                          = 0;
+    t->float_type.is_abstract        = true;
+    t->float_type.is_explicit_suffix = false;
+    return t;
+}
+
+Type* type_abstract_ieee_float(void) {
+    Type* t                          = calloc(1, sizeof(*t));
+    t->kind                          = TYPE_FLOAT;
+    t->bits                          = 0;
+    t->float_type.is_abstract        = true;
+    t->float_type.is_explicit_suffix = true;
     return t;
 }
 
@@ -66,6 +83,30 @@ Type* type_array(Type* elem, size_t len) {
     t->kind                 = TYPE_ARRAY;
     t->array_type.elem_type = elem;
     t->array_type.len       = len;
+    return t;
+}
+
+Type* type_unsigned_float(uint16_t bits) {
+    Type* t                   = calloc(1, sizeof(*t));
+    t->kind                   = TYPE_FLOAT;
+    t->bits                   = bits;
+    t->float_type.is_unsigned = true;
+    return t;
+}
+
+Type* type_canonical_zero_float(uint16_t bits) {
+    Type* t                         = calloc(1, sizeof(*t));
+    t->kind                         = TYPE_FLOAT;
+    t->bits                         = bits;
+    t->float_type.is_canonical_zero = true;
+    return t;
+}
+
+Type* type_canonical_float(uint16_t bits) {
+    Type* t                    = calloc(1, sizeof(*t));
+    t->kind                    = TYPE_FLOAT;
+    t->bits                    = bits;
+    t->float_type.is_canonical = true;
     return t;
 }
 
@@ -137,7 +178,7 @@ int type_bytes(Type* t) {
         case TYPE_INT:
         case TYPE_FLOAT:
             if (t->bits) {
-                return t->bits / 8;
+                return (t->bits + 7) / 8; /* Round up to nearest byte */
             } else {
                 return t->kind == TYPE_FLOAT ? 4 : 8;
             }

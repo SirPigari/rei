@@ -156,7 +156,23 @@ int main(int argc, char** argv) {
         if (!should_rebuild)
             continue;
 
-        cmd_append(&cmd, "gcc", "-gdwarf-4", "-fno-omit-frame-pointer", "-rdynamic", "-c", "-ldw", "-o", obj, "-MMD", "-MF", dep, "-MT", obj, src);
+        cmd_append(
+            &cmd,
+            "gcc",
+            "-gdwarf-4",
+            "-fno-omit-frame-pointer",
+            "-rdynamic",
+            "-c",
+            "-ldw",
+            "-o",
+            obj,
+            "-MMD",
+            "-MF",
+            dep,
+            "-MT",
+            obj,
+            src
+        );
 
         if (!nob_cmd_run(&cmd, .async = &procs)) {
             ok = false;

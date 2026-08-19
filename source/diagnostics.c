@@ -5,8 +5,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <string.h>
+#include <unistd.h>
 
 int diag_error_count = 0;
 
@@ -15,9 +15,12 @@ static int diag_error_count_at_silence = 0;
 
 static const char* level_str(DiagLevel l) {
     switch (l) {
-        case DIAG_ERROR: return "error";
-        case DIAG_WARN:  return "warning";
-        case DIAG_NOTE:  return "note";
+        case DIAG_ERROR:
+            return "error";
+        case DIAG_WARN:
+            return "warning";
+        case DIAG_NOTE:
+            return "note";
     }
     return "?";
 }
@@ -94,17 +97,11 @@ static void print_frame(Dwfl* dwfl, void* addr, const char* exe) {
     if (ln) {
         int         lineno = 0;
         const char* src    = dwfl_lineinfo(ln, NULL, &lineno, NULL, NULL, NULL);
-        fprintf(stderr, "    %-40s %s:%d\n",
-                func ? func : "??",
-                src  ? src  : "??",
-                lineno);
+        fprintf(stderr, "    %-40s %s:%d\n", func ? func : "??", src ? src : "??", lineno);
     } else if (mod) {
         Dwarf_Addr  bias = 0;
         const char* name = dwfl_module_info(mod, NULL, NULL, NULL, &bias, NULL, NULL, NULL);
-        fprintf(stderr, "    %-40s (%s+0x%lx)\n",
-                func ? func : "??",
-                name ? name : "??",
-                (unsigned long)(ua - bias));
+        fprintf(stderr, "    %-40s (%s+0x%lx)\n", func ? func : "??", name ? name : "??", (unsigned long)(ua - bias));
     }
 }
 
@@ -118,14 +115,15 @@ void diag_ice(const char* file, int line, ...) {
 
     char    exe[256];
     ssize_t elen = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (elen != -1) exe[elen] = '\0';
+    if (elen != -1)
+        exe[elen] = '\0';
 
     Dwfl* dwfl = dwfl_init();
 
     for (int i = 0; i < n; i++)
         print_frame(dwfl, frames[i], elen != -1 ? exe : "");
 
-    fprintf(stderr, "\n^^^ Backtrace:\n");
+    fprintf(stderr, "\n^^^ Backtrace\n");
     fprintf(stderr, "%s:%d: ICE: ", file, line);
     vfprintf(stderr, fmt, args);
     fprintf(stderr, "\n");
