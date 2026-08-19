@@ -263,10 +263,15 @@ static AstNode* parse_postfix(Lexer* l) {
             lexer_next(l);
             AstNode* n = ast_node(AST_CALL, pk.loc);
             if (expr->kind == AST_IDENT) {
-                n->callee = expr->ident;
+                n->callee   = expr->ident;
+                n->receiver = NULL;
+            } else if (expr->kind == AST_MEMBER) {
+                n->callee   = expr->member_name;
+                n->receiver = expr->member_value;
             } else {
-                diag_emit(DIAG_ERROR, pk.loc, "only identifiers can be called directly");
-                n->callee = "";
+                diag_emit(DIAG_ERROR, pk.loc, "only identifiers and member expressions can be called");
+                n->callee   = "";
+                n->receiver = NULL;
             }
             int cap      = 8;
             n->arg_count = 0;
@@ -586,10 +591,16 @@ static AstNode* parse_stmt(Lexer* l) {
                 lexer_next(l);
                 AstNode* call = ast_node(AST_CALL, pk_postfix.loc);
                 if (expr->kind == AST_IDENT) {
-                    call->callee = expr->ident;
+                    call->callee   = expr->ident;
+                    call->receiver = NULL;
+                } else if (expr->kind == AST_MEMBER) {
+                    /* Method call: receiver.method(args) */
+                    call->callee   = expr->member_name;
+                    call->receiver = expr->member_value;
                 } else {
-                    diag_emit(DIAG_ERROR, pk_postfix.loc, "only identifiers can be called directly");
-                    call->callee = "";
+                    diag_emit(DIAG_ERROR, pk_postfix.loc, "only identifiers and member expressions can be called");
+                    call->callee   = "";
+                    call->receiver = NULL;
                 }
                 int cap         = 8;
                 call->arg_count = 0;
@@ -704,8 +715,75 @@ static AstNode* parse_stmt(Lexer* l) {
         return n;
     }
 
-    AstNode* n = ast_node(AST_EXPR_STMT, pk.loc);
-    n->expr    = parse_expr(l);
+    AstNode* expr = parse_expr(l);
+    
+    Token assign_tok = lexer_peek(l);
+    bool  is_assign_op =
+        (assign_tok.kind == TK_EQ || assign_tok.kind == TK_PLUSEQ || assign_tok.kind == TK_MINUSEQ ||
+         assign_tok.kind == TK_STAREQ || assign_tok.kind == TK_SLASHEQ || assign_tok.kind == TK_PERCENTEQ ||
+         assign_tok.kind == TK_BITANDEQ || assign_tok.kind == TK_BITOREQ || assign_tok.kind == TK_BITXOREQ ||
+         assign_tok.kind == TK_SHLEQ || assign_tok.kind == TK_SHREQ || assign_tok.kind == TK_STARSTAREQ ||
+         assign_tok.kind == TK_LANDEQ || assign_tok.kind == TK_LOREQ);
+
+    if (is_assign_op) {
+        Token    op_tok  = lexer_next(l);
+        AstNode* n       = ast_node(AST_ASSIGN, expr->loc);
+        n->assign_target = expr;
+
+        switch (op_tok.kind) {
+            case TK_EQ:
+                n->assign_op = ASSIGN_EQ;
+                break;
+            case TK_PLUSEQ:
+                n->assign_op = ASSIGN_ADDEQ;
+                break;
+            case TK_MINUSEQ:
+                n->assign_op = ASSIGN_SUBEQ;
+                break;
+            case TK_STAREQ:
+                n->assign_op = ASSIGN_MULEQ;
+                break;
+            case TK_SLASHEQ:
+                n->assign_op = ASSIGN_DIVEQ;
+                break;
+            case TK_PERCENTEQ:
+                n->assign_op = ASSIGN_MODEQ;
+                break;
+            case TK_BITANDEQ:
+                n->assign_op = ASSIGN_BITANDEQ;
+                break;
+            case TK_BITOREQ:
+                n->assign_op = ASSIGN_BITOREQ;
+                break;
+            case TK_BITXOREQ:
+                n->assign_op = ASSIGN_BITXOREQ;
+                break;
+            case TK_SHLEQ:
+                n->assign_op = ASSIGN_SHLEQ;
+                break;
+            case TK_SHREQ:
+                n->assign_op = ASSIGN_SHREQ;
+                break;
+            case TK_STARSTAREQ:
+                n->assign_op = ASSIGN_POWEQ;
+                break;
+            case TK_LANDEQ:
+                n->assign_op = ASSIGN_LANDEQ;
+                break;
+            case TK_LOREQ:
+                n->assign_op = ASSIGN_LOREQ;
+                break;
+            default:
+                break;
+        }
+
+        n->assign_value = parse_expr(l);
+        expect(l, TK_SEMI);
+        return n;
+    }
+
+    AstNode* n = ast_node(AST_EXPR_STMT, expr->loc);
+    n->expr    = expr;
     expect(l, TK_SEMI);
     return n;
 }
@@ -877,6 +955,10 @@ static AnnotationType parse_annotation_name(const char* name_str, size_t name_le
         return ANNOT_SENTINEL;
     if (name_len == 9 && memcmp(name_str, "link_name", 9) == 0)
         return ANNOT_LINK_NAME;
+    if (name_len == 6 && memcmp(name_str, "method", 6) == 0)
+        return ANNOT_METHOD;
+    if (name_len == 17 && memcmp(name_str, "param_constraints", 17) == 0)
+        return ANNOT_PARAM_CONSTRAINTS;
 
     if (name_len == 6 && memcmp(name_str, "sizeof", 6) == 0)
         return BUILTIN_SIZEOF;
@@ -952,7 +1034,8 @@ static AstNode* parse_annotation(Lexer* l) {
 
             bool is_type_annotation =
                 (n->annot_type == BUILTIN_TYPESTR || n->annot_type == BUILTIN_SIZEOF ||
-                 n->annot_type == BUILTIN_ALIGNOF || n->annot_type == BUILTIN_OFFSETOF);
+                 n->annot_type == BUILTIN_ALIGNOF || n->annot_type == BUILTIN_OFFSETOF ||
+                 n->annot_type == ANNOT_METHOD);
 
             if (is_type_annotation) {
                 Token    start_tok = lexer_peek(l);
@@ -962,7 +1045,7 @@ static AstNode* parse_annotation(Lexer* l) {
                 expr->typeval      = ty;
 
                 Token end_tok = lexer_peek(l);
-                if (end_tok.start == start_tok.start && end_tok.kind != TK_COMMA && end_tok.kind != TK_RPAREN &&
+                if (end_tok.start == start_tok.start && end_tok.kind != TK_COMMA && end_tok.kind != TK_SEMI && end_tok.kind != TK_RPAREN &&
                     end_tok.kind != TK_EOF) {
                     lexer_next(l);
                 }
@@ -974,7 +1057,7 @@ static AstNode* parse_annotation(Lexer* l) {
                 break;
             }
             exprs[count++] = expr;
-            if (lexer_peek(l).kind == TK_COMMA) {
+            if (lexer_peek(l).kind == TK_COMMA || lexer_peek(l).kind == TK_SEMI) {
                 lexer_next(l);
             }
         }

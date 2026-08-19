@@ -769,7 +769,7 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
             case IR_BINOP: {
                 Type* lhs_type_info = i->lhs_type ? i->lhs_type : val_type(&slotmap, i->blhs);
                 Type* rhs_type_info = i->rhs_type ? i->rhs_type : val_type(&slotmap, i->brhs);
-                
+
                 int  lhs_bytes  = lhs_type_info ? type_bytes(lhs_type_info) : REGISTER_SIZE;
                 bool lhs_signed = lhs_type_info ? type_is_signed(lhs_type_info) : false;
                 int  rhs_bytes  = rhs_type_info ? type_bytes(rhs_type_info) : REGISTER_SIZE;
@@ -934,44 +934,62 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
                             L(out, "movzx rax, al");
                             break;
                         case OP_BITAND: {
-                            const char* bitwise_reg = 
-                                lhs_bytes == 1 ? "al" :
-                                lhs_bytes == 2 ? "ax" :
-                                lhs_bytes == 4 ? "eax" : "rax";
-                            L(out, "and %s, %s", bitwise_reg, lhs_bytes == 1 ? "cl" : lhs_bytes == 2 ? "cx" : lhs_bytes == 4 ? "ecx" : "rcx");
+                            const char* bitwise_reg = lhs_bytes == 1   ? "al"
+                                                      : lhs_bytes == 2 ? "ax"
+                                                      : lhs_bytes == 4 ? "eax"
+                                                                       : "rax";
+                            L(out,
+                              "and %s, %s",
+                              bitwise_reg,
+                              lhs_bytes == 1   ? "cl"
+                              : lhs_bytes == 2 ? "cx"
+                              : lhs_bytes == 4 ? "ecx"
+                                               : "rcx");
                             break;
                         }
                         case OP_BITOR: {
-                            const char* bitwise_reg = 
-                                lhs_bytes == 1 ? "al" :
-                                lhs_bytes == 2 ? "ax" :
-                                lhs_bytes == 4 ? "eax" : "rax";
-                            L(out, "or %s, %s", bitwise_reg, lhs_bytes == 1 ? "cl" : lhs_bytes == 2 ? "cx" : lhs_bytes == 4 ? "ecx" : "rcx");
+                            const char* bitwise_reg = lhs_bytes == 1   ? "al"
+                                                      : lhs_bytes == 2 ? "ax"
+                                                      : lhs_bytes == 4 ? "eax"
+                                                                       : "rax";
+                            L(out,
+                              "or %s, %s",
+                              bitwise_reg,
+                              lhs_bytes == 1   ? "cl"
+                              : lhs_bytes == 2 ? "cx"
+                              : lhs_bytes == 4 ? "ecx"
+                                               : "rcx");
                             break;
                         }
                         case OP_BITXOR: {
-                            const char* bitwise_reg = 
-                                lhs_bytes == 1 ? "al" :
-                                lhs_bytes == 2 ? "ax" :
-                                lhs_bytes == 4 ? "eax" : "rax";
-                            L(out, "xor %s, %s", bitwise_reg, lhs_bytes == 1 ? "cl" : lhs_bytes == 2 ? "cx" : lhs_bytes == 4 ? "ecx" : "rcx");
+                            const char* bitwise_reg = lhs_bytes == 1   ? "al"
+                                                      : lhs_bytes == 2 ? "ax"
+                                                      : lhs_bytes == 4 ? "eax"
+                                                                       : "rax";
+                            L(out,
+                              "xor %s, %s",
+                              bitwise_reg,
+                              lhs_bytes == 1   ? "cl"
+                              : lhs_bytes == 2 ? "cx"
+                              : lhs_bytes == 4 ? "ecx"
+                                               : "rcx");
                             break;
                         }
                         case OP_SHL: {
-                            const char* shift_op = lhs_signed ? "sal" : "shl";
-                            const char* shift_reg = 
-                                lhs_bytes == 1 ? "al" :
-                                lhs_bytes == 2 ? "ax" :
-                                lhs_bytes == 4 ? "eax" : "rax";
+                            const char* shift_op  = lhs_signed ? "sal" : "shl";
+                            const char* shift_reg = lhs_bytes == 1   ? "al"
+                                                    : lhs_bytes == 2 ? "ax"
+                                                    : lhs_bytes == 4 ? "eax"
+                                                                     : "rax";
                             L(out, "%s %s, cl", shift_op, shift_reg);
                             break;
                         }
                         case OP_SHR: {
-                            const char* shift_op = lhs_signed ? "sar" : "shr";
-                            const char* shift_reg = 
-                                lhs_bytes == 1 ? "al" :
-                                lhs_bytes == 2 ? "ax" :
-                                lhs_bytes == 4 ? "eax" : "rax";
+                            const char* shift_op  = lhs_signed ? "sar" : "shr";
+                            const char* shift_reg = lhs_bytes == 1   ? "al"
+                                                    : lhs_bytes == 2 ? "ax"
+                                                    : lhs_bytes == 4 ? "eax"
+                                                                     : "rax";
                             L(out, "%s %s, cl", shift_op, shift_reg);
                             break;
                         }
@@ -1269,44 +1287,38 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
                         if (bytes <= 8) {
                             switch (bytes) {
                                 case 1:
-                                    L(out, "mov al, byte [rax]");
                                     L(out, "mov byte [r11], al");
                                     break;
                                 case 2:
-                                    L(out, "mov ax, word [rax]");
                                     L(out, "mov word [r11], ax");
                                     break;
                                 case 3:
-                                    L(out, "mov ax, word [rax]");
                                     L(out, "mov byte [r11], al");
                                     L(out, "mov byte [r11+1], ah");
-                                    L(out, "mov al, byte [rax+2]");
+                                    L(out, "shr rax, 16");
                                     L(out, "mov byte [r11+2], al");
                                     break;
                                 case 4:
-                                    L(out, "mov eax, dword [rax]");
                                     L(out, "mov dword [r11], eax");
                                     break;
                                 case 5:
-                                    L(out, "mov eax, dword [rax]");
                                     L(out, "mov dword [r11], eax");
-                                    L(out, "mov al, byte [rax+4]");
+                                    L(out, "shr rax, 32");
                                     L(out, "mov byte [r11+4], al");
                                     break;
                                 case 6:
-                                    L(out, "mov eax, dword [rax]");
                                     L(out, "mov dword [r11], eax");
-                                    L(out, "mov ax, word [rax+4]");
+                                    L(out, "shr rax, 32");
                                     L(out, "mov word [r11+4], ax");
                                     break;
                                 case 7:
-                                    L(out, "mov eax, dword [rax]");
                                     L(out, "mov dword [r11], eax");
-                                    L(out, "mov eax, dword [rax+3]");
-                                    L(out, "mov dword [r11+3], eax");
+                                    L(out, "shr rax, 32");
+                                    L(out, "mov byte [r11+4], al");
+                                    L(out, "shr rax, 8");
+                                    L(out, "mov word [r11+5], ax");
                                     break;
                                 case 8:
-                                    L(out, "mov rax, qword [rax]");
                                     L(out, "mov qword [r11], rax");
                                     break;
                             }
@@ -1566,6 +1578,30 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
             }
 
             case IR_STRING: {
+                break;
+            }
+
+            case IR_GLOBAL_ADDR: {
+                struct IrGlobalEntry* g = &m->globals[i->global_idx];
+                int slot_offset = slot_of(&slotmap, i->dst);
+                
+                if (i->type && i->type->kind == TYPE_PTR && i->type->ptr_type.is_fat) {
+                    L(out, "mov rax, [rei__%s]", g->name);
+                    emit_store_slot(out, REGISTER_SIZE, mem(slot_offset, buf));
+                    L(out, "mov rax, [rei__%s + 8]", g->name);
+                    emit_store_slot(out, REGISTER_SIZE, mem(slot_offset - REGISTER_SIZE, buf));
+                } else {
+                    L(out, "lea rax, [rei__%s]", g->name);
+                    emit_store_slot(out, REGISTER_SIZE, mem(slot_offset, buf));
+                }
+                break;
+            }
+
+            case IR_GLOBAL_LEN: {
+                struct IrGlobalEntry* g = &m->globals[i->global_idx];
+                int slot_offset = slot_of(&slotmap, i->dst);
+                L(out, "mov rax, [rei__%s + 8]", g->name);
+                emit_store_slot(out, REGISTER_SIZE, mem(slot_offset, buf));
                 break;
             }
 
@@ -1920,8 +1956,75 @@ void codegen_x86_64_linux(IrModule* m, FILE* out) {
 
     symmap_free(&sm);
 
+    if (m->global_count > 0) {
+        fprintf(out, "\nsection '.data' writable\n\n");
+        for (int gi = 0; gi < m->global_count; gi++) {
+            struct IrGlobalEntry* g = &m->globals[gi];
+            fprintf(out, "rei__%s:\n  ", g->name);
+            
+            switch (g->init_kind) {
+                case GLOBAL_INIT_ZERO:
+                    if (g->type && g->type->kind == TYPE_INT) {
+                        int bytes = type_bytes(g->type);
+                        fprintf(out, "db %d dup(0)", bytes);
+                    } else if (g->type && g->type->kind == TYPE_PTR) {
+                        fprintf(out, "dq 0");
+                    } else {
+                        fprintf(out, "dq 0");
+                    }
+                    break;
+                case GLOBAL_INIT_INT:
+                    if (g->type && g->type->kind == TYPE_INT) {
+                        int bytes = type_bytes(g->type);
+                        switch (bytes) {
+                            case 1:
+                                fprintf(out, "db %lld", g->init_val.ival);
+                                break;
+                            case 2:
+                                fprintf(out, "dw %lld", g->init_val.ival);
+                                break;
+                            case 4:
+                                fprintf(out, "dd %lld", g->init_val.ival);
+                                break;
+                            case 8:
+                                fprintf(out, "dq %lld", g->init_val.ival);
+                                break;
+                            default:
+                                ICE("unsupported integer size for global variable");
+                                break;
+                        }
+                    } else {
+                        fprintf(out, "dq %lld", g->init_val.ival);
+                    }
+                    break;
+                case GLOBAL_INIT_FLOAT: {
+                    uint64_t bits;
+                    memcpy(&bits, &g->init_val.fval, sizeof(double));
+                    fprintf(out, "dq 0x%llx", bits);
+                    break;
+                }
+                case GLOBAL_INIT_STRING: {
+                    int str_idx = (int)g->init_val.ival;
+                    bool is_fat = g->type && g->type->kind == TYPE_PTR && g->type->ptr_type.is_fat;
+                    if (is_fat) {
+                        fprintf(out, "dq __str%d, %lld", str_idx, g->fat_len);
+                    } else {
+                        fprintf(out, "dq __str%d", str_idx);
+                    }
+                    break;
+                }
+                case GLOBAL_INIT_PTR_GLOBAL: {
+                    fprintf(out, "dq rei__%lld", g->init_val.ival);
+                    break;
+                }
+            }
+            fprintf(out, "\n");
+        }
+        fprintf(out, "\n");
+    }
+
     if (m->str_count > 0) {
-        fprintf(out, "\nsection '.rodata'\n\n");
+        fprintf(out, "section '.rodata'\n\n");
         if (!opts.no_assertions && state.has_used_assertion_null_ptr) {
             fprintf(out, "__assertion_null_ptr:\n  db '" REI_ASSERTION_NULL_PTR_MSG "', 0x0A\n");
         }

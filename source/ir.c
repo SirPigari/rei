@@ -341,10 +341,12 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                             if (e->type->ptr_type.is_fat && slot->val != IR_NO_VAL) {
                                 return slot->val;
                             }
-                            if (slot->val != IR_NO_VAL) {
-                                return slot->val;
-                            }
-                            return slot->ptr;
+                            IrInstr* ld  = emit(f);
+                            ld->op       = IR_LOAD;
+                            ld->dst      = next_val(f);
+                            ld->type     = e->type;
+                            ld->load_ptr = slot->ptr;
+                            return ld->dst;
                         }
                         IrInstr* ld  = emit(f);
                         ld->op       = IR_LOAD;
@@ -379,10 +381,12 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                             if (e->type->ptr_type.is_fat && slot->val != IR_NO_VAL) {
                                 return slot->val;
                             }
-                            if (slot->val != IR_NO_VAL) {
-                                return slot->val;
-                            }
-                            return slot->ptr;
+                            IrInstr* ld  = emit(f);
+                            ld->op       = IR_LOAD;
+                            ld->dst      = next_val(f);
+                            ld->type     = e->type;
+                            ld->load_ptr = slot->ptr;
+                            return ld->dst;
                         }
                         IrInstr* ld  = emit(f);
                         ld->op       = IR_LOAD;
@@ -397,6 +401,34 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                     return slot->val;
                 }
             }
+            
+            for (int gi = 0; gi < m->global_count; gi++) {
+                struct IrGlobalEntry* g = &m->globals[gi];
+                if (strcmp(g->name, e->ident) == 0) {
+                    if (e->type && e->type->kind == TYPE_PTR && e->type->ptr_type.is_fat) {
+                        IrInstr* i   = emit(f);
+                        i->op        = IR_GLOBAL_ADDR;
+                        i->dst       = next_val(f);
+                        i->type      = e->type;
+                        i->global_idx = gi;
+                        return i->dst;
+                    } else {
+                        IrInstr* addr = emit(f);
+                        addr->op      = IR_GLOBAL_ADDR;
+                        addr->dst     = next_val(f);
+                        addr->type    = type_ptr(e->type, false, false);
+                        addr->global_idx = gi;
+                        
+                        IrInstr* ld = emit(f);
+                        ld->op       = IR_LOAD;
+                        ld->dst      = next_val(f);
+                        ld->type     = e->type;
+                        ld->load_ptr = addr->dst;
+                        return ld->dst;
+                    }
+                }
+            }
+            
             return IR_NO_VAL;
         }
         case AST_CALL: {
@@ -1767,6 +1799,81 @@ static void lower_stmt(IrModule* m, IrFunc* f, AstNode* s, VarMap* vars) {
                 set_len->type      = s->assign_value->type;
                 set_len->store_ptr = fat_ptr;
                 set_len->store_val = assign_val;
+            } else if (s->assign_target->kind == AST_UNOP && s->assign_target->uop == UOP_DEREF) {
+                IrVal ptr_val    = lower_expr(m, f, s->assign_target->operand, vars);
+                IrVal assign_val = lower_expr(m, f, s->assign_value, vars);
+
+                if (ptr_val == IR_NO_VAL || assign_val == IR_NO_VAL)
+                    break;
+
+                IrVal new_val = assign_val;
+                if (s->assign_op != ASSIGN_EQ) {
+                    IrInstr* ld   = emit(f);
+                    ld->op        = IR_LOAD;
+                    ld->dst       = next_val(f);
+                    ld->type      = s->type;
+                    ld->load_ptr  = ptr_val;
+                    IrVal old_val = ld->dst;
+
+                    IrInstr* binop = emit(f);
+                    binop->op      = IR_BINOP;
+                    binop->dst     = next_val(f);
+                    binop->type    = s->type;
+                    binop->blhs    = old_val;
+                    binop->brhs    = assign_val;
+
+                    switch (s->assign_op) {
+                        case ASSIGN_ADDEQ:
+                            binop->bop = OP_ADD;
+                            break;
+                        case ASSIGN_SUBEQ:
+                            binop->bop = OP_SUB;
+                            break;
+                        case ASSIGN_MULEQ:
+                            binop->bop = OP_MUL;
+                            break;
+                        case ASSIGN_DIVEQ:
+                            binop->bop = OP_DIV;
+                            break;
+                        case ASSIGN_MODEQ:
+                            binop->bop = OP_MOD;
+                            break;
+                        case ASSIGN_BITANDEQ:
+                            binop->bop = OP_BITAND;
+                            break;
+                        case ASSIGN_BITOREQ:
+                            binop->bop = OP_BITOR;
+                            break;
+                        case ASSIGN_BITXOREQ:
+                            binop->bop = OP_BITXOR;
+                            break;
+                        case ASSIGN_SHLEQ:
+                            binop->bop = OP_SHL;
+                            break;
+                        case ASSIGN_SHREQ:
+                            binop->bop = OP_SHR;
+                            break;
+                        case ASSIGN_LANDEQ:
+                            binop->bop = OP_LAND;
+                            break;
+                        case ASSIGN_LOREQ:
+                            binop->bop = OP_LOR;
+                            break;
+                        case ASSIGN_POWEQ:
+                            binop->bop = OP_POW;
+                            break;
+                        default:
+                            break;
+                    }
+                    new_val = binop->dst;
+                }
+
+                IrInstr* st   = emit(f);
+                st->op        = IR_STORE;
+                st->dst       = IR_NO_VAL;
+                st->type      = s->type;
+                st->store_ptr = ptr_val;
+                st->store_val = new_val;
             } else {
                 ICE("unsupported assignment target");
             }
@@ -1804,6 +1911,54 @@ IrModule* ir_lower(Module* ast) {
             slot->val     = IR_NO_VAL;
             slot->ptr     = IR_NO_VAL;
             slot->ast     = const_decl->init;
+        }
+    }
+
+    for (int di = 0; di < ast->count; di++) {
+        AstNode* d = ast->decls[di];
+        if (d->kind == AST_VAR_DECL) {
+            VarSlot* slot = ht_put(&global_vars, d->var_name);
+            slot->val     = IR_NO_VAL;
+            slot->ptr     = IR_NO_VAL;
+            slot->ast     = d->init;
+        }
+    }
+
+    for (int di = 0; di < ast->count; di++) {
+        AstNode* d = ast->decls[di];
+        if (d->kind != AST_VAR_DECL)
+            continue;
+        
+        if (m->global_count >= m->global_cap) {
+            m->global_cap = m->global_cap ? m->global_cap * 2 : 8;
+            m->globals    = realloc(m->globals, m->global_cap * sizeof(m->globals[0]));
+        }
+        
+        struct IrGlobalEntry* g = &m->globals[m->global_count++];
+        g->name                 = d->var_name;
+        g->type                 = d->var_type;
+        g->init_kind            = GLOBAL_INIT_ZERO;
+        g->init_val.ival        = 0;
+        g->fat_len              = 0;
+        
+        if (d->init) {
+            if (d->init->kind == AST_INT_LIT) {
+                g->init_kind = GLOBAL_INIT_INT;
+                g->init_val.ival = d->init->ival;
+            } else if (d->init->kind == AST_FLOAT_LIT) {
+                g->init_kind = GLOBAL_INIT_FLOAT;
+                g->init_val.fval = d->init->fval;
+            } else if (d->init->kind == AST_STRING_LIT) {
+                int str_idx = intern_string(m, d->init->str, d->init->len, d->init->str_flags);
+                g->init_kind = GLOBAL_INIT_STRING;
+                g->init_val.ival = str_idx;
+                if (d->var_type && d->var_type->kind == TYPE_PTR && d->var_type->ptr_type.is_fat) {
+                    g->fat_len = d->init->len;
+                }
+            } else if (d->init->kind == AST_NULLPTR) {
+                g->init_kind = GLOBAL_INIT_ZERO;
+                g->init_val.ival = 0;
+            }
         }
     }
 
@@ -2137,6 +2292,12 @@ void ir_dump(IrModule* m) {
                         break;
                     case IR_STRING:
                         pos += snprintf(buf + pos, sizeof(buf) - pos, "string[%d]", i->str_idx);
+                        break;
+                    case IR_GLOBAL_ADDR:
+                        pos += snprintf(buf + pos, sizeof(buf) - pos, "&global[%d]", i->global_idx);
+                        break;
+                    case IR_GLOBAL_LEN:
+                        pos += snprintf(buf + pos, sizeof(buf) - pos, "len(global[%d])", i->global_idx);
                         break;
                     case IR_GEP:
                         pos += snprintf(

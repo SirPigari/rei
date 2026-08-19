@@ -1300,35 +1300,60 @@ static Type* expr_ident_to_type(const char* name) {
 }
 
 static Type* resolve_type(Type* t, Scope* sc) {
-    if (!t || t->kind != TYPE_IDENT)
+    if (!t)
         return t;
 
-    const char* name = t->ident_type.name;
+    if (t->kind == TYPE_IDENT) {
+        const char* name = t->ident_type.name;
 
-    Type* builtin = expr_ident_to_type(name);
-    if (builtin)
-        return builtin;
+        Type* builtin = expr_ident_to_type(name);
+        if (builtin)
+            return builtin;
 
-    SymbolEntry* sym = scope_lookup(sc, name);
-    if (sym && sym->decl && sym->decl->kind == AST_CONST_DECL && sym->decl->init) {
-        AstNode* init = sym->decl->init;
-        if (init->kind == AST_IDENT) {
-            Type* resolved = expr_ident_to_type(init->ident);
-            if (resolved)
-                return resolved;
+        SymbolEntry* sym = scope_lookup(sc, name);
+        if (sym && sym->decl && sym->decl->kind == AST_CONST_DECL && sym->decl->init) {
+            AstNode* init = sym->decl->init;
+            if (init->kind == AST_IDENT) {
+                Type* resolved = expr_ident_to_type(init->ident);
+                if (resolved)
+                    return resolved;
+            }
         }
+
+        if (sym && sym->type) {
+            return resolve_type(sym->type, sc);
+        }
+
+        return t;
     }
 
-    if (sym && sym->type) {
-        return resolve_type(sym->type, sc);
+    if (t->kind == TYPE_PTR) {
+        Type* resolved_elem = resolve_type(t->ptr_type.elem_type, sc);
+        if (resolved_elem != t->ptr_type.elem_type) {
+            Type* new_ptr = type_ptr(resolved_elem, t->ptr_type.is_fat, t->ptr_type.non_null);
+            return new_ptr;
+        }
+        return t;
+    }
+
+    if (t->kind == TYPE_ARRAY) {
+        Type* resolved_elem = resolve_type(t->array_type.elem_type, sc);
+        if (resolved_elem != t->array_type.elem_type) {
+            Type* new_array = type_array(resolved_elem, t->array_type.len);
+            return new_array;
+        }
+        return t;
     }
 
     return t;
 }
 
-static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint);
-static void  check_stmt(AstNode* s, Scope* sc, AstNode* fn);
-static bool  check_annotation(AstNode* annot, AstNode* target);
+static AstNode* substitute_params_in_expr(AstNode* expr, Param* params, int param_count, AstNode** args, int arg_count, Location loc);
+static bool     eval_const_expr(AstNode* expr, int64_t* out_val);
+static bool     eval_const_expr_with_scope(AstNode* expr, int64_t* out_val, Scope* sc);
+static Type*    check_expr_hint(AstNode* e, Scope* sc, Type* hint);
+static void     check_stmt(AstNode* s, Scope* sc, AstNode* fn);
+static bool     check_annotation(AstNode* annot, AstNode* target);
 
 static Type* check_expr(AstNode* e, Scope* sc) {
     return check_expr_hint(e, sc, NULL);
@@ -1487,6 +1512,68 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
         }
 
         case AST_CALL: {
+            if (e->receiver != NULL) {
+                Type* receiver_type = check_expr(e->receiver, sc);
+                if (is_error_type(receiver_type)) {
+                    for (int i = 0; i < e->arg_count; i++)
+                        check_expr(e->args[i], sc);
+                    e->type = type_void();
+                    return e->type;
+                }
+
+                SymbolEntry* sym = scope_lookup(sc, e->callee);
+                if (!sym || !sym->decl) {
+                    diag_emit(DIAG_ERROR, e->loc, "undefined method '%s'", e->callee);
+                    for (int i = 0; i < e->arg_count; i++)
+                        check_expr(e->args[i], sc);
+                    e->type = type_void();
+                    return e->type;
+                }
+
+                AstNode* fn = sym->decl;
+                if (!fn->method_type) {
+                    char ts[64];
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->loc,
+                        "'%s' is not a method; cannot call it with . notation on %s",
+                        e->callee,
+                        type_str(receiver_type, ts, sizeof(ts))
+                    );
+                    for (int i = 0; i < e->arg_count; i++)
+                        check_expr(e->args[i], sc);
+                    e->type = type_void();
+                    return e->type;
+                }
+
+                Type* method_type = resolve_type(fn->method_type, sc);
+                if (!types_assignable(receiver_type, method_type)) {
+                    char rs[64], ms[64];
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->loc,
+                        "method '%s' expects receiver of type %s, got %s",
+                        e->callee,
+                        type_str(method_type, ms, sizeof(ms)),
+                        type_str(receiver_type, rs, sizeof(rs))
+                    );
+                    for (int i = 0; i < e->arg_count; i++)
+                        check_expr(e->args[i], sc);
+                    e->type = type_void();
+                    return e->type;
+                }
+
+                AstNode** new_args = malloc((e->arg_count + 1) * sizeof(AstNode*));
+                new_args[0]        = e->receiver;
+                for (int i = 0; i < e->arg_count; i++) {
+                    new_args[i + 1] = e->args[i];
+                }
+                free(e->args);
+                e->args       = new_args;
+                e->arg_count += 1;
+                e->receiver   = NULL;
+            }
+
             SymbolEntry* sym = scope_lookup(sc, e->callee);
             if (!sym || !sym->decl) {
                 diag_emit(DIAG_ERROR, e->loc, "undefined function '%s'", e->callee);
@@ -1599,6 +1686,82 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                         }
                     } else {
                         check_expr(e->args[i], sc);
+                    }
+                }
+            }
+
+            if (fn->param_constraint_count > 0) {
+                for (size_t ci = 0; ci < fn->param_constraint_count; ci++) {
+                    AstNode* constraint_expr = fn->param_constraints[ci];
+                    
+                    AstNode* eval_expr = substitute_params_in_expr(constraint_expr, fn->params, fn->param_count, e->args, e->arg_count, e->loc);
+                    int64_t constraint_value = 0;
+                    
+                    if (!eval_const_expr_with_scope(eval_expr, &constraint_value, sc)) {
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->loc,
+                            "param constraint #%zu failed to evaluate to a constant at call site",
+                            ci + 1
+                        );
+                        continue;
+                    }
+                    
+                    if (constraint_value == 0) {
+                        char constraint_str[256] = {0};
+                        
+                        if (constraint_expr->kind == AST_BINOP) {
+                            const char* op_str = "";
+                            switch (constraint_expr->op) {
+                                case OP_LESS: op_str = "<"; break;
+                                case OP_LESSEQ: op_str = "<="; break;
+                                case OP_MORE: op_str = ">"; break;
+                                case OP_MOREEQ: op_str = ">="; break;
+                                case OP_EQ: op_str = "=="; break;
+                                case OP_NEQ: op_str = "!="; break;
+                                case OP_LAND: op_str = "&&"; break;
+                                case OP_LOR: op_str = "||"; break;
+                                case OP_ADD: op_str = "+"; break;
+                                case OP_SUB: op_str = "-"; break;
+                                case OP_MUL: op_str = "*"; break;
+                                case OP_DIV: op_str = "/"; break;
+                                default: op_str = "?"; break;
+                            }
+                            
+                            char left[128] = "?", right[128] = "?";
+                            if (constraint_expr->lhs && constraint_expr->lhs->kind == AST_IDENT) {
+                                snprintf(left, sizeof(left), "%s", constraint_expr->lhs->ident);
+                            } else if (constraint_expr->lhs && constraint_expr->lhs->kind == AST_INT_LIT) {
+                                snprintf(left, sizeof(left), "%lld", constraint_expr->lhs->ival);
+                            }
+                            
+                            if (constraint_expr->rhs && constraint_expr->rhs->kind == AST_IDENT) {
+                                snprintf(right, sizeof(right), "%s", constraint_expr->rhs->ident);
+                            } else if (constraint_expr->rhs && constraint_expr->rhs->kind == AST_INT_LIT) {
+                                snprintf(right, sizeof(right), "%lld", constraint_expr->rhs->ival);
+                            }
+                            
+                            snprintf(constraint_str, sizeof(constraint_str), ": %s %s %s", left, op_str, right);
+                        } else if (constraint_expr->kind == AST_IDENT) {
+                            snprintf(constraint_str, sizeof(constraint_str), ": %s", constraint_expr->ident);
+                        } else {
+                            snprintf(constraint_str, sizeof(constraint_str), "");
+                        }
+                        
+                        diag_emit(
+                            DIAG_ERROR,
+                            e->loc,
+                            "constraint #%zu for function '%s' is not satisfied%s",
+                            ci + 1,
+                            fn->function_name,
+                            constraint_str
+                        );
+                        
+                        diag_emit(
+                            DIAG_NOTE,
+                            constraint_expr->loc,
+                            "constraint defined here in #param_constraints annotation"
+                        );
                     }
                 }
             }
@@ -2575,7 +2738,7 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                 scope_type = type_void();
             }
 
-            if (s->var_type && !is_error_type(s->var_type)) {
+            if (s->var_type && s->var_type->kind == TYPE_INT || s->var_type->kind == TYPE_FLOAT) {
                 int bytes = type_bytes(s->var_type);
                 if (bytes > 8) {
                     diag_emit(
@@ -2776,9 +2939,55 @@ static void check_stmt(AstNode* s, Scope* sc, AstNode* fn) {
                 }
 
                 s->type = target_type;
+            } else if (s->assign_target->kind == AST_UNOP && s->assign_target->uop == UOP_DEREF) {
+                Type* ptr_type = check_expr(s->assign_target->operand, sc);
+                
+                if (is_error_type(ptr_type)) {
+                    check_expr(s->assign_value, sc);
+                    break;
+                }
+
+                if (!ptr_type || ptr_type->kind != TYPE_PTR) {
+                    char pts[64];
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->assign_target->loc,
+                        "cannot dereference non-pointer type %s",
+                        type_str(ptr_type, pts, sizeof(pts))
+                    );
+                    check_expr(s->assign_value, sc);
+                    break;
+                }
+
+                Type* elem_type = resolve_type(ptr_type->ptr_type.elem_type, sc);
+                Type* vt        = check_expr_hint(s->assign_value, sc, elem_type);
+
+                if (elem_type && !types_equal(elem_type, vt) && !types_assignable(vt, elem_type)) {
+                    char et[64], vt_str[64];
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->loc,
+                        "assignment type mismatch: dereferenced pointer has type %s, value has type %s",
+                        type_str(elem_type, et, sizeof(et)),
+                        type_str(vt, vt_str, sizeof(vt_str))
+                    );
+                    diag_type_hint(vt, elem_type, s->assign_value->loc);
+                }
+
+                if (s->assign_op != ASSIGN_EQ && elem_type && !is_numeric(elem_type)) {
+                    char ts[64];
+                    diag_emit(
+                        DIAG_ERROR,
+                        s->loc,
+                        "compound assignment requires numeric type, got %s",
+                        type_str(elem_type, ts, sizeof(ts))
+                    );
+                }
+
+                s->type = elem_type;
             } else {
                 diag_emit(
-                    DIAG_ERROR, s->loc, "assignment target must be a variable, array index, or fat pointer member"
+                    DIAG_ERROR, s->loc, "assignment target must be a variable, array index, fat pointer member, or dereferenced pointer"
                 );
                 check_expr(s->assign_value, sc);
             }
@@ -2898,6 +3107,8 @@ static bool is_compile_time_expr(AstNode* expr) {
         case AST_NULLPTR:
         case AST_TYPE_LIT:
             return true;
+        case AST_IDENT:
+            return true;
         case AST_ARRAY_LIT:
             for (int i = 0; i < expr->element_count; i++) {
                 if (!is_compile_time_expr(expr->elements[i]))
@@ -2913,6 +3124,31 @@ static bool is_compile_time_expr(AstNode* expr) {
         case AST_RANGE:
             return is_compile_time_expr(expr->range_start) && is_compile_time_expr(expr->range_end) &&
                    (!expr->range_step || is_compile_time_expr(expr->range_step));
+        default:
+            return false;
+    }
+}
+
+static bool is_param_constraint_expr(AstNode* expr, AstNode* func_decl) {
+    if (!expr)
+        return false;
+
+    switch (expr->kind) {
+        case AST_INT_LIT:
+        case AST_FLOAT_LIT:
+        case AST_STRING_LIT:
+        case AST_NULLPTR:
+        case AST_TYPE_LIT:
+            return true;
+        case AST_IDENT:
+            return true;
+        case AST_CAST:
+            return is_param_constraint_expr(expr->cast_expr, func_decl);
+        case AST_UNOP:
+            return is_param_constraint_expr(expr->operand, func_decl);
+        case AST_BINOP:
+            return is_param_constraint_expr(expr->lhs, func_decl) && 
+                   is_param_constraint_expr(expr->rhs, func_decl);
         default:
             return false;
     }
@@ -2996,6 +3232,262 @@ static bool validate_rei_main_signature(AstNode* func_decl) {
         diag_emit(DIAG_ERROR, func_decl->loc, "main function can have 0, 1, or 2 arguments, got %d", param_count);
         return false;
     }
+}
+
+static AstNode* substitute_params_in_expr(AstNode* expr, Param* params, int param_count, AstNode** args, int arg_count, Location loc) {
+    if (!expr)
+        return NULL;
+
+    if (expr->kind == AST_IDENT) {
+        for (int i = 0; i < param_count && i < arg_count; i++) {
+            if (params[i].name && strcmp(params[i].name, expr->ident) == 0) {
+                return args[i];
+            }
+        }
+        return expr;
+    }
+
+    if (expr->kind == AST_INT_LIT || expr->kind == AST_FLOAT_LIT || expr->kind == AST_STRING_LIT ||
+        expr->kind == AST_NULLPTR || expr->kind == AST_TYPE_LIT) {
+        return expr;
+    }
+
+    if (expr->kind == AST_BINOP) {
+        AstNode* new_binop = ast_node(AST_BINOP, expr->loc);
+        new_binop->op       = expr->op;
+        new_binop->lhs      = substitute_params_in_expr(expr->lhs, params, param_count, args, arg_count, loc);
+        new_binop->rhs      = substitute_params_in_expr(expr->rhs, params, param_count, args, arg_count, loc);
+        return new_binop;
+    }
+
+    if (expr->kind == AST_UNOP) {
+        AstNode* new_unop = ast_node(AST_UNOP, expr->loc);
+        new_unop->uop     = expr->uop;
+        new_unop->operand = substitute_params_in_expr(expr->operand, params, param_count, args, arg_count, loc);
+        return new_unop;
+    }
+
+    return expr;
+}
+
+static bool eval_const_expr(AstNode* expr, int64_t* out_val) {
+    if (!expr)
+        return false;
+
+    if (expr->kind == AST_INT_LIT) {
+        *out_val = expr->ival;
+        return true;
+    }
+
+    if (expr->kind == AST_UNOP) {
+        int64_t val;
+        if (!eval_const_expr(expr->operand, &val))
+            return false;
+
+        switch (expr->uop) {
+            case UOP_NEG:
+                *out_val = -val;
+                return true;
+            case UOP_POS:
+                *out_val = val;
+                return true;
+            case UOP_NOT:
+                *out_val = !val;
+                return true;
+            case UOP_BITNOT:
+                *out_val = ~val;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    if (expr->kind == AST_BINOP) {
+        int64_t lhs, rhs;
+        if (!eval_const_expr(expr->lhs, &lhs) || !eval_const_expr(expr->rhs, &rhs)) {
+            return false;
+        }
+
+        switch (expr->op) {
+            case OP_ADD:
+                *out_val = lhs + rhs;
+                return true;
+            case OP_SUB:
+                *out_val = lhs - rhs;
+                return true;
+            case OP_MUL:
+                *out_val = lhs * rhs;
+                return true;
+            case OP_DIV:
+                if (rhs == 0)
+                    return false;
+                *out_val = lhs / rhs;
+                return true;
+            case OP_MOD:
+                if (rhs == 0)
+                    return false;
+                *out_val = lhs % rhs;
+                return true;
+            case OP_SHL:
+                *out_val = lhs << rhs;
+                return true;
+            case OP_SHR:
+                *out_val = lhs >> rhs;
+                return true;
+            case OP_BITAND:
+                *out_val = lhs & rhs;
+                return true;
+            case OP_BITOR:
+                *out_val = lhs | rhs;
+                return true;
+            case OP_BITXOR:
+                *out_val = lhs ^ rhs;
+                return true;
+            case OP_LAND:
+                *out_val = (lhs != 0) && (rhs != 0);
+                return true;
+            case OP_LOR:
+                *out_val = (lhs != 0) || (rhs != 0);
+                return true;
+            case OP_EQ:
+                *out_val = lhs == rhs;
+                return true;
+            case OP_NEQ:
+                *out_val = lhs != rhs;
+                return true;
+            case OP_LESS:
+                *out_val = lhs < rhs;
+                return true;
+            case OP_LESSEQ:
+                *out_val = lhs <= rhs;
+                return true;
+            case OP_MORE:
+                *out_val = lhs > rhs;
+                return true;
+            case OP_MOREEQ:
+                *out_val = lhs >= rhs;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    return false;
+}
+
+static bool eval_const_expr_with_scope(AstNode* expr, int64_t* out_val, Scope* sc) {
+    if (!expr)
+        return false;
+
+    if (expr->kind == AST_INT_LIT) {
+        *out_val = expr->ival;
+        return true;
+    }
+
+    if (expr->kind == AST_IDENT) {
+        if (sc) {
+            SymbolEntry* sym = scope_lookup(sc, expr->ident);
+            if (sym && sym->decl && sym->decl->kind == AST_VAR_DECL && sym->decl->init) {
+                return eval_const_expr_with_scope(sym->decl->init, out_val, sc);
+            }
+        }
+        return false;
+    }
+
+    if (expr->kind == AST_UNOP) {
+        int64_t val;
+        if (!eval_const_expr_with_scope(expr->operand, &val, sc))
+            return false;
+
+        switch (expr->uop) {
+            case UOP_NEG:
+                *out_val = -val;
+                return true;
+            case UOP_POS:
+                *out_val = val;
+                return true;
+            case UOP_NOT:
+                *out_val = !val;
+                return true;
+            case UOP_BITNOT:
+                *out_val = ~val;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    if (expr->kind == AST_BINOP) {
+        int64_t lhs, rhs;
+        if (!eval_const_expr_with_scope(expr->lhs, &lhs, sc) || !eval_const_expr_with_scope(expr->rhs, &rhs, sc)) {
+            return false;
+        }
+
+        switch (expr->op) {
+            case OP_ADD:
+                *out_val = lhs + rhs;
+                return true;
+            case OP_SUB:
+                *out_val = lhs - rhs;
+                return true;
+            case OP_MUL:
+                *out_val = lhs * rhs;
+                return true;
+            case OP_DIV:
+                if (rhs == 0)
+                    return false;
+                *out_val = lhs / rhs;
+                return true;
+            case OP_MOD:
+                if (rhs == 0)
+                    return false;
+                *out_val = lhs % rhs;
+                return true;
+            case OP_SHL:
+                *out_val = lhs << rhs;
+                return true;
+            case OP_SHR:
+                *out_val = lhs >> rhs;
+                return true;
+            case OP_BITAND:
+                *out_val = lhs & rhs;
+                return true;
+            case OP_BITOR:
+                *out_val = lhs | rhs;
+                return true;
+            case OP_BITXOR:
+                *out_val = lhs ^ rhs;
+                return true;
+            case OP_LAND:
+                *out_val = (lhs != 0) && (rhs != 0);
+                return true;
+            case OP_LOR:
+                *out_val = (lhs != 0) || (rhs != 0);
+                return true;
+            case OP_EQ:
+                *out_val = lhs == rhs;
+                return true;
+            case OP_NEQ:
+                *out_val = lhs != rhs;
+                return true;
+            case OP_LESS:
+                *out_val = lhs < rhs;
+                return true;
+            case OP_LESSEQ:
+                *out_val = lhs <= rhs;
+                return true;
+            case OP_MORE:
+                *out_val = lhs > rhs;
+                return true;
+            case OP_MOREEQ:
+                *out_val = lhs >= rhs;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    return false;
 }
 
 static bool check_annotation(AstNode* annot, AstNode* target) {
@@ -3511,6 +4003,89 @@ static bool check_annotation(AstNode* annot, AstNode* target) {
             annot->type = type_ptr(type_number(TYPE_INT, 8, true), true, false);
             return true;
         }
+
+        case ANNOT_METHOD: {
+            if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "method annotation can only be applied to function or extern declarations"
+                );
+                return false;
+            }
+
+            if (annot->annot_expr_count != 1) {
+                diag_emit(DIAG_ERROR, annot->loc, "method requires exactly one type argument");
+                return false;
+            }
+
+            AstNode* type_arg = annot->annot_exprs[0];
+            if (type_arg->kind != AST_TYPE_LIT || !type_arg->typeval) {
+                diag_emit(DIAG_ERROR, type_arg->loc, "method argument must be a type literal");
+                return false;
+            }
+
+            Type* method_type = type_arg->typeval;
+            if (method_type->kind == TYPE_IDENT) {
+                const char* ident_name = method_type->ident_type.name;
+                Type*       resolved   = expr_ident_to_type(ident_name);
+                if (resolved) {
+                    method_type = resolved;
+                } else {
+                    diag_emit(
+                        DIAG_ERROR,
+                        type_arg->loc,
+                        "method type '%s' is not a valid type",
+                        ident_name
+                    );
+                    return false;
+                }
+            }
+
+            if (target->param_count == 0) {
+                diag_emit(DIAG_ERROR, annot->loc, "method must have at least one parameter (receiver)");
+                return false;
+            }
+
+            target->method_type = method_type;
+            return true;
+        }
+
+        case ANNOT_PARAM_CONSTRAINTS: {
+            if (!target || (target->kind != AST_FUNC_DECL && target->kind != AST_EXTERN_DECL)) {
+                diag_emit(
+                    DIAG_ERROR,
+                    annot->loc,
+                    "param_constraints annotation can only be applied to function or extern declarations"
+                );
+                return false;
+            }
+
+            if (annot->annot_arg_parse_failed) {
+                diag_emit(DIAG_ERROR, annot->loc, "param_constraints annotation has invalid arguments");
+                return false;
+            }
+
+            if (annot->annot_expr_count == 0) {
+                diag_emit(DIAG_ERROR, annot->loc, "param_constraints requires at least one constraint expression");
+                return false;
+            }
+
+            for (size_t i = 0; i < annot->annot_expr_count; i++) {
+                if (!is_param_constraint_expr(annot->annot_exprs[i], target)) {
+                    diag_emit(
+                        DIAG_ERROR,
+                        annot->annot_exprs[i]->loc,
+                        "param_constraints must only reference function parameters and constants"
+                    );
+                    return false;
+                }
+            }
+
+            target->param_constraints       = annot->annot_exprs;
+            target->param_constraint_count = annot->annot_expr_count;
+            return true;
+        }
     }
 }
 
@@ -3821,11 +4396,13 @@ int semantic_check(Module* m, const CompileConfig* config) {
             continue;
         Scope* fn_sc = scope_new(global);
         for (int p = 0; p < d->param_count; p++)
-            if (d->params[p].name)
-                if (scope_lookup(fn_sc, d->params[p].name))
-                    diag_emit(DIAG_ERROR, d->params[p].loc, "redefinition of parameter '%s'", d->params[p].name);
+            if (d->params[p].name) {
+                SymbolEntry* existing = ht_find(&fn_sc->syms, d->params[p].name);
+                if (existing)
+                    diag_emit(DIAG_ERROR, d->params[p].loc, "duplicate parameter name '%s'", d->params[p].name);
                 else
                     scope_add(fn_sc, d->params[p].name, NULL, d->params[p].type);
+            }
         if (d->body)
             check_stmt(d->body, fn_sc, d);
     }

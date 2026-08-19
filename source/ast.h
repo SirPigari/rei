@@ -159,21 +159,23 @@ typedef enum {
 
 /* builtin => no target, annot => whatever is after it is the target */
 typedef enum {
-    BUILTIN_SIZEOF,      /* #sizeof(T) || #sizeof(expr) */
-    BUILTIN_ALIGNOF,     /* #alignof(T) || #alignof(expr) */
-    BUILTIN_OFFSETOF,    /* #offsetof(T, member) */
-    BUILTIN_TYPEOF,      /* #typeof(expr) */
-    BUILTIN_TYPESTR,     /* #typestr(expr) */
-    BUILTIN_TIME,        /* #time("fmt string") || #time(tm) */
+    BUILTIN_SIZEOF,          /* #sizeof(T) || #sizeof(expr) */
+    BUILTIN_ALIGNOF,         /* #alignof(T) || #alignof(expr) */
+    BUILTIN_OFFSETOF,        /* #offsetof(T, member) */
+    BUILTIN_TYPEOF,          /* #typeof(expr) */
+    BUILTIN_TYPESTR,         /* #typestr(expr) */
+    BUILTIN_TIME,            /* #time("fmt string") || #time(tm) */
 
-    ANNOT_NO_MANGLE,     /* #no_mangle <func decl> */
-    ANNOT_PRINTF_LIKE,   /* #printf_like(fmt) || #printf_like("fmt") || #printf_like(0) */
-    ANNOT_SCANF_LIKE,    /* #scanf_like(fmt) || #scanf_like("fmt") || #scanf_like(0) */
-    ANNOT_STRFTIME_LIKE, /* #strftime_like(fmt) || #strftime_like("fmt") || #strftime_like(0) */
-    ANNOT_DEPRECATED,    /* #deprecated <func decl> || #deprecated("message") <func decl> */
-    ANNOT_INLINE,        /* #inline <func decl> || #inline(never) <func decl> || #inline(always) <func decl> */
-    ANNOT_SENTINEL,      /* #sentinel <func decl> || #sentinel(const value) <func decl> */
-    ANNOT_LINK_NAME,     /* #link_name(name) <func decl> || #link_name("name") <func decl> */
+    ANNOT_NO_MANGLE,         /* #no_mangle <func decl> */
+    ANNOT_PRINTF_LIKE,       /* #printf_like(fmt) || #printf_like("fmt") || #printf_like(0) */
+    ANNOT_SCANF_LIKE,        /* #scanf_like(fmt) || #scanf_like("fmt") || #scanf_like(0) */
+    ANNOT_STRFTIME_LIKE,     /* #strftime_like(fmt) || #strftime_like("fmt") || #strftime_like(0) */
+    ANNOT_DEPRECATED,        /* #deprecated <func decl> || #deprecated("message") <func decl> */
+    ANNOT_INLINE,            /* #inline <func decl> || #inline(never) <func decl> || #inline(always) <func decl> */
+    ANNOT_SENTINEL,          /* #sentinel <func decl> || #sentinel(const value) <func decl> */
+    ANNOT_LINK_NAME,         /* #link_name(name) <func decl> || #link_name("name") <func decl> */
+    ANNOT_METHOD,            /* #method(T) <func decl> */
+    ANNOT_PARAM_CONSTRAINTS, /* #param_constraints(<const exprs that operate on a param name...>) <func decl> */
 } AnnotationType;
 
 typedef enum {
@@ -207,17 +209,20 @@ struct AstNode {
     union {
         /* AST_FUNC_DECL, AST_EXTERN_DECL */
         struct {
-            char*    function_name;
-            Param*   params;
-            int      param_count;
-            Type*    ret_type;
-            AstNode* body;           /* NULL = decl */
-            uint16_t flags;          /* FuncFlags */
-            uint8_t  inline_hint;    /* 0=none/hint, 1=never, 2=always */
-            int      param_idx;      /* for printf_like, scanf_like, strftime_like */
-            char*    deprecated_msg; /* NULL = no message */
-            char*    link_name_str;  /* NULL = not set */
-            AstNode* sentinel_value; /* sentinel value for #sentinel */
+            char*     function_name;
+            Param*    params;
+            int       param_count;
+            Type*     ret_type;
+            AstNode*  body;              /* NULL = decl */
+            uint16_t  flags;             /* FuncFlags */
+            uint8_t   inline_hint;       /* 0=none/hint, 1=never, 2=always */
+            int       param_idx;         /* for printf_like, scanf_like, strftime_like */
+            char*     deprecated_msg;    /* NULL = no message */
+            char*     link_name_str;     /* NULL = not set */
+            AstNode*  sentinel_value;    /* sentinel value for #sentinel */
+            Type*     method_type;       /* NULL if not a method, else type for #method(T) */
+            AstNode** param_constraints; /* array of constraint exprs for #param_constraints */
+            size_t    param_constraint_count;
         };
 
         /* AST_VAR_DECL, AST_CONST_DECL */
@@ -341,7 +346,8 @@ struct AstNode {
             char*     callee;
             AstNode** args;
             int       arg_count;
-            AstNode*  func_decl; /* semantic fills in */
+            AstNode*  func_decl;  /* semantic fills in */
+            AstNode*  receiver;   /* NULL = regular call, non-NULL = method call */
         };
 
         /* AST_BINOP */

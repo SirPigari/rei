@@ -21,6 +21,8 @@ typedef enum {
     IR_LOAD,        /* v = *src          -- load from pointer */
     IR_STORE,       /* *dst_ptr = src    -- store through pointer (no dst val) */
     IR_STRING,      /* v = &rodata[str_idx]  -- pointer to string literal */
+    IR_GLOBAL_ADDR, /* v = &global[idx]  -- address of global variable */
+    IR_GLOBAL_LEN,  /* v = len(global[idx])  -- length of global (for fat ptrs) */
     IR_GEP,         /* v = base_ptr + idx*elem_size  -- get element pointer */
     IR_ARRAY_INIT,  /* v = alloca([T;N]) -- stack array, elements filled by IR_STOREs */
     IR_FAT_PTR,     /* v = fat.ptr       -- extract data pointer from fat pointer alloca */
@@ -68,13 +70,14 @@ typedef struct {
             IrVal gep_base;
             IrVal gep_idx;
             int   gep_scale;
-            Type* gep_base_type; /* Type of the base value (may be fat pointer) */
+            Type* gep_base_type;
         };
         int str_idx;
+        int global_idx;  /* For IR_GLOBAL_ADDR, IR_GLOBAL_LEN */
         int alloca_slots;
         struct {
             IrVal cast_src;
-            Type* cast_from_type; /* source type; i->type is the destination type */
+            Type* cast_from_type;
         };
         struct {
             IrVal sel_cond;
@@ -131,6 +134,24 @@ typedef struct {
     }*           strings;
     int          str_count;
     int          str_cap;
+    struct IrGlobalEntry {
+        char*   name;
+        Type*   type;
+        enum IrGlobalInitKind {
+            GLOBAL_INIT_ZERO,
+            GLOBAL_INIT_INT,
+            GLOBAL_INIT_FLOAT,
+            GLOBAL_INIT_STRING,
+            GLOBAL_INIT_PTR_GLOBAL,
+        } init_kind;
+        union {
+            int64_t ival;
+            double  fval;
+        } init_val;
+        int64_t fat_len;
+    }*           globals;
+    int          global_count;
+    int          global_cap;
     MainFuncInfo rei_main;
     int          next_label;
     bool         no_assertions;
