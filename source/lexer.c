@@ -41,7 +41,7 @@ void lexer_put_back(Lexer* l, Token t) {
 }
 
 static Location loc_here(Lexer* l) {
-    return (Location){l->filename, l->line, l->col};
+    return (Location){l->filename, l->src, l->line, l->col};
 }
 
 static char advance(Lexer* l) {

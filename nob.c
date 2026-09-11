@@ -9,6 +9,7 @@
 #define BUILD      "./build/"
 #define DEPS_DIR   "./build/deps/"
 #define OUTPUT     "./rei"
+#define TEST_DIR   "./examples/"
 
 const char* source_files[] = {
     SOURCE "main.c",
@@ -79,6 +80,7 @@ static void print_help(void) {
     printf("  (default)    Build the project\n");
     printf("  run          Build and run the project\n");
     printf("  clean        Remove all build artifacts\n");
+    printf("  test         Build and run tests\n");
     printf("\n");
     printf("Options:\n");
     printf("  -B           Force rebuild all files\n");
@@ -97,6 +99,61 @@ static void clean_build(void) {
     nob_log(NOB_INFO, "Cleaning build directory...");
     nob_walk_dir(BUILD, delete_file_recursive, .post_order = true);
     nob_log(NOB_INFO, "Clean complete");
+}
+
+static int test_count  = 0;
+static int test_passed = 0;
+static int test_failed = 0;
+
+static bool process_test_file(Nob_Walk_Entry entry) {
+    if (entry.type == NOB_FILE_REGULAR) {
+        Nob_String_View filename = nob_sv_from_cstr(entry.path);
+
+        if (nob_sv_ends_with_cstr(filename, ".rei")) {
+            size_t path_len = strlen(entry.path);
+            char*  exe_name = (char*)nob_temp_alloc(path_len);
+            memcpy(exe_name, entry.path, path_len - 4);
+            exe_name[path_len - 4] = '\0';
+
+            Cmd cmd = {0};
+            cmd_append(&cmd, OUTPUT, entry.path, "-o", exe_name);
+
+            nob_log(NOB_INFO, "  Building: %s", entry.path);
+            if (!nob_cmd_run(&cmd)) {
+                nob_log(NOB_ERROR, "  Failed to compile: %s", entry.path);
+                test_failed++;
+                test_count++;
+                return true;
+            }
+
+            cmd = (Cmd){0};
+            cmd_append(&cmd, exe_name);
+
+            nob_log(NOB_INFO, "  Running: %s", exe_name);
+            if (!nob_cmd_run(&cmd)) {
+                nob_log(NOB_ERROR, "  Test failed: %s", exe_name);
+                test_failed++;
+            } else {
+                test_passed++;
+            }
+            test_count++;
+        }
+    }
+    return true;
+}
+
+static void build_tests(void) {
+    nob_log(NOB_INFO, "Building and running test examples from %s", TEST_DIR);
+
+    test_count  = 0;
+    test_passed = 0;
+    test_failed = 0;
+    nob_walk_dir(TEST_DIR, process_test_file);
+
+    nob_log(NOB_INFO, "Test results: %d/%d passed", test_passed, test_count);
+    if (test_failed > 0) {
+        nob_log(NOB_ERROR, "%d test(s) failed", test_failed);
+    }
 }
 
 int main(int argc, char** argv) {
@@ -121,6 +178,9 @@ int main(int argc, char** argv) {
             return 0;
         } else if (strcmp(argv[i], "clean") == 0) {
             clean_build();
+            return 0;
+        } else if (strcmp(argv[i], "test") == 0) {
+            build_tests();
             return 0;
         } else if (strcmp(argv[i], "run") == 0) {
             run_idx = i;

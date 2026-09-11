@@ -346,8 +346,8 @@ struct AstNode {
             char*     callee;
             AstNode** args;
             int       arg_count;
-            AstNode*  func_decl;  /* semantic fills in */
-            AstNode*  receiver;   /* NULL = regular call, non-NULL = method call */
+            AstNode*  func_decl; /* semantic fills in */
+            AstNode*  receiver;  /* NULL = regular call, non-NULL = method call */
         };
 
         /* AST_BINOP */

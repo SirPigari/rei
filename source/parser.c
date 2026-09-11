@@ -716,7 +716,7 @@ static AstNode* parse_stmt(Lexer* l) {
     }
 
     AstNode* expr = parse_expr(l);
-    
+
     Token assign_tok = lexer_peek(l);
     bool  is_assign_op =
         (assign_tok.kind == TK_EQ || assign_tok.kind == TK_PLUSEQ || assign_tok.kind == TK_MINUSEQ ||
@@ -1045,8 +1045,8 @@ static AstNode* parse_annotation(Lexer* l) {
                 expr->typeval      = ty;
 
                 Token end_tok = lexer_peek(l);
-                if (end_tok.start == start_tok.start && end_tok.kind != TK_COMMA && end_tok.kind != TK_SEMI && end_tok.kind != TK_RPAREN &&
-                    end_tok.kind != TK_EOF) {
+                if (end_tok.start == start_tok.start && end_tok.kind != TK_COMMA && end_tok.kind != TK_SEMI &&
+                    end_tok.kind != TK_RPAREN && end_tok.kind != TK_EOF) {
                     lexer_next(l);
                 }
             } else {

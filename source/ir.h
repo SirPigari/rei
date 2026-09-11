@@ -73,7 +73,7 @@ typedef struct {
             Type* gep_base_type;
         };
         int str_idx;
-        int global_idx;  /* For IR_GLOBAL_ADDR, IR_GLOBAL_LEN */
+        int global_idx; /* For IR_GLOBAL_ADDR, IR_GLOBAL_LEN */
         int alloca_slots;
         struct {
             IrVal cast_src;
@@ -131,12 +131,12 @@ typedef struct {
         char*          data;
         size_t         len;
         StrPrefixFlags str_flags;
-    }*           strings;
-    int          str_count;
-    int          str_cap;
+    }*  strings;
+    int str_count;
+    int str_cap;
     struct IrGlobalEntry {
-        char*   name;
-        Type*   type;
+        char* name;
+        Type* type;
         enum IrGlobalInitKind {
             GLOBAL_INIT_ZERO,
             GLOBAL_INIT_INT,

@@ -401,25 +401,25 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                     return slot->val;
                 }
             }
-            
+
             for (int gi = 0; gi < m->global_count; gi++) {
                 struct IrGlobalEntry* g = &m->globals[gi];
                 if (strcmp(g->name, e->ident) == 0) {
                     if (e->type && e->type->kind == TYPE_PTR && e->type->ptr_type.is_fat) {
-                        IrInstr* i   = emit(f);
-                        i->op        = IR_GLOBAL_ADDR;
-                        i->dst       = next_val(f);
-                        i->type      = e->type;
+                        IrInstr* i    = emit(f);
+                        i->op         = IR_GLOBAL_ADDR;
+                        i->dst        = next_val(f);
+                        i->type       = e->type;
                         i->global_idx = gi;
                         return i->dst;
                     } else {
-                        IrInstr* addr = emit(f);
-                        addr->op      = IR_GLOBAL_ADDR;
-                        addr->dst     = next_val(f);
-                        addr->type    = type_ptr(e->type, false, false);
+                        IrInstr* addr    = emit(f);
+                        addr->op         = IR_GLOBAL_ADDR;
+                        addr->dst        = next_val(f);
+                        addr->type       = type_ptr(e->type, false, false);
                         addr->global_idx = gi;
-                        
-                        IrInstr* ld = emit(f);
+
+                        IrInstr* ld  = emit(f);
                         ld->op       = IR_LOAD;
                         ld->dst      = next_val(f);
                         ld->type     = e->type;
@@ -428,7 +428,7 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                     }
                 }
             }
-            
+
             return IR_NO_VAL;
         }
         case AST_CALL: {
@@ -1928,35 +1928,35 @@ IrModule* ir_lower(Module* ast) {
         AstNode* d = ast->decls[di];
         if (d->kind != AST_VAR_DECL)
             continue;
-        
+
         if (m->global_count >= m->global_cap) {
             m->global_cap = m->global_cap ? m->global_cap * 2 : 8;
             m->globals    = realloc(m->globals, m->global_cap * sizeof(m->globals[0]));
         }
-        
+
         struct IrGlobalEntry* g = &m->globals[m->global_count++];
         g->name                 = d->var_name;
         g->type                 = d->var_type;
         g->init_kind            = GLOBAL_INIT_ZERO;
         g->init_val.ival        = 0;
         g->fat_len              = 0;
-        
+
         if (d->init) {
             if (d->init->kind == AST_INT_LIT) {
-                g->init_kind = GLOBAL_INIT_INT;
+                g->init_kind     = GLOBAL_INIT_INT;
                 g->init_val.ival = d->init->ival;
             } else if (d->init->kind == AST_FLOAT_LIT) {
-                g->init_kind = GLOBAL_INIT_FLOAT;
+                g->init_kind     = GLOBAL_INIT_FLOAT;
                 g->init_val.fval = d->init->fval;
             } else if (d->init->kind == AST_STRING_LIT) {
-                int str_idx = intern_string(m, d->init->str, d->init->len, d->init->str_flags);
-                g->init_kind = GLOBAL_INIT_STRING;
+                int str_idx      = intern_string(m, d->init->str, d->init->len, d->init->str_flags);
+                g->init_kind     = GLOBAL_INIT_STRING;
                 g->init_val.ival = str_idx;
                 if (d->var_type && d->var_type->kind == TYPE_PTR && d->var_type->ptr_type.is_fat) {
                     g->fat_len = d->init->len;
                 }
             } else if (d->init->kind == AST_NULLPTR) {
-                g->init_kind = GLOBAL_INIT_ZERO;
+                g->init_kind     = GLOBAL_INIT_ZERO;
                 g->init_val.ival = 0;
             }
         }

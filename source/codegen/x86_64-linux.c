@@ -1582,9 +1582,9 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
             }
 
             case IR_GLOBAL_ADDR: {
-                struct IrGlobalEntry* g = &m->globals[i->global_idx];
-                int slot_offset = slot_of(&slotmap, i->dst);
-                
+                struct IrGlobalEntry* g           = &m->globals[i->global_idx];
+                int                   slot_offset = slot_of(&slotmap, i->dst);
+
                 if (i->type && i->type->kind == TYPE_PTR && i->type->ptr_type.is_fat) {
                     L(out, "mov rax, [rei__%s]", g->name);
                     emit_store_slot(out, REGISTER_SIZE, mem(slot_offset, buf));
@@ -1598,8 +1598,8 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
             }
 
             case IR_GLOBAL_LEN: {
-                struct IrGlobalEntry* g = &m->globals[i->global_idx];
-                int slot_offset = slot_of(&slotmap, i->dst);
+                struct IrGlobalEntry* g           = &m->globals[i->global_idx];
+                int                   slot_offset = slot_of(&slotmap, i->dst);
                 L(out, "mov rax, [rei__%s + 8]", g->name);
                 emit_store_slot(out, REGISTER_SIZE, mem(slot_offset, buf));
                 break;
@@ -1961,7 +1961,7 @@ void codegen_x86_64_linux(IrModule* m, FILE* out) {
         for (int gi = 0; gi < m->global_count; gi++) {
             struct IrGlobalEntry* g = &m->globals[gi];
             fprintf(out, "rei__%s:\n  ", g->name);
-            
+
             switch (g->init_kind) {
                 case GLOBAL_INIT_ZERO:
                     if (g->type && g->type->kind == TYPE_INT) {
@@ -2004,8 +2004,8 @@ void codegen_x86_64_linux(IrModule* m, FILE* out) {
                     break;
                 }
                 case GLOBAL_INIT_STRING: {
-                    int str_idx = (int)g->init_val.ival;
-                    bool is_fat = g->type && g->type->kind == TYPE_PTR && g->type->ptr_type.is_fat;
+                    int  str_idx = (int)g->init_val.ival;
+                    bool is_fat  = g->type && g->type->kind == TYPE_PTR && g->type->ptr_type.is_fat;
                     if (is_fat) {
                         fprintf(out, "dq __str%d, %lld", str_idx, g->fat_len);
                     } else {
