@@ -33,12 +33,23 @@ param = [ ident , ":" ] , type , [ "=" , expr ]
       | "..." , [ ident , ":" , type ] ;
 
 
-(*  Annotations  *)
+(*  Annotations and Builtins  *)
 
-annotation = "#" , ident , [ "(" , annotation-args , ")" ] ;
+(* Annotations: apply to function declarations *)
+annotation = "#" , annotation-name , [ "(" , annotation-args , ")" ] ;
+
+annotation-name = "method"
+                | "param_constraints"
+                | "no_mangle"
+                | "printf_like"
+                | "scanf_like"
+                | "strftime_like"
+                | "deprecated"
+                | "inline"
+                | "sentinel"
+                | "link_name" ;
 
 annotation-args = (* anything *) ;
-
 
 (*  Types  *)
 
@@ -105,6 +116,7 @@ expr-stmt = expr , ";" ;
 
 expr = range ;
 
+(* Range expressions for slicing: arr[start..end], arr[start..<end], arr[start..end:step] *)
 range = logical-or , [ ( ".." | "..<" ) , logical-or , [ ":" , logical-or ] ] ;
 
 logical-or = logical-and , { "||" , logical-and } ;
@@ -147,12 +159,15 @@ unary-op = "-" | "+" | "!" | "~" | "&" | "*" | "++" | "--" ;
 
 postfix = primary , { postfix-op } ;
 
-postfix-op = "[" , expr , "]"              (* array indexing  *)
-           | "(" , arg-list , ")"          (* function call    *)
-           | "." , ident                   (* member access    *)
-           | "as" , ( type | "?" )         (* cast operator    *)
-           | "++"                          (* postfix increment *)
-           | "--" ;                        (* postfix decrement *)
+postfix-op = "[" , expr , "]"              (* array indexing or range slicing *)
+           | "(" , arg-list , ")"          (* function call or method call    *)
+           | "." , ident                   (* member access or method call    *)
+           | "as" , ( type | "?" )         (* cast operator                   *)
+           | "++"                          (* postfix increment               *)
+           | "--" ;                        (* postfix decrement               *)
+
+(* Note: Method calls use dot notation: (receiver).method_name(args)           *)
+(* Requires #method(ReceiverType) annotation on the function declaration       *)
 
 
 (*  Primary expressions  *)
@@ -163,7 +178,18 @@ primary = int-lit
         | array-lit
         | ident
         | "nullptr"
+        | builtin
         | "(" , expr , ")" ;
+
+(* Builtins: compile-time introspection *)
+builtin = "#sizeof" , "(" , type-or-expr , ")"
+        | "#alignof" , "(" , type-or-expr , ")"
+        | "#offsetof" , "(" , type , "," , ident , ")"
+        | "#typeof" , "(" , expr , ")"
+        | "#typestr" , "(" , expr , ")"
+        | "#time" , "(" , str-lit , ")" ;
+
+type-or-expr = type | expr ;
 
 array-lit = "[" , [ expr , { "," , expr } ] , "]" ;
 
