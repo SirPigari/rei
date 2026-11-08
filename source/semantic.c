@@ -1299,6 +1299,23 @@ static Type* expr_ident_to_type(const char* name) {
     return NULL;
 }
 
+static AstNode* substitute_params_in_expr(
+    AstNode*  expr,
+    Param*    params,
+    int       param_count,
+    AstNode** args,
+    int       arg_count,
+    Location  loc
+);
+static bool  eval_const_expr(AstNode* expr, int64_t* out_val);
+static bool  eval_const_expr_with_scope(AstNode* expr, int64_t* out_val, Scope* sc);
+static AstNode* preprocess_expr(AstNode* expr, Scope* scope);
+static AstNode* preprocess_stmt(AstNode* stmt, Scope* scope);
+static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint);
+static void  check_stmt(AstNode* s, Scope* sc, AstNode* fn);
+static bool  check_annotation(AstNode* annot, AstNode* target);
+static bool  eval_const_expr_with_scope(AstNode* expr, int64_t* out_val, Scope* sc);
+
 static Type* resolve_type(Type* t, Scope* sc) {
     if (!t)
         return t;
@@ -1338,8 +1355,23 @@ static Type* resolve_type(Type* t, Scope* sc) {
 
     if (t->kind == TYPE_ARRAY) {
         Type* resolved_elem = resolve_type(t->array_type.elem_type, sc);
+        
+        size_t resolved_len = t->array_type.len;
+        if (t->array_type.len_expr && resolved_len == 0) {
+            int64_t len_val;
+            if (eval_const_expr_with_scope(t->array_type.len_expr, &len_val, sc)) {
+                if (len_val > 0) {
+                    resolved_len = (size_t)len_val;
+                    t->array_type.len = resolved_len;  /* Cache the resolved length */
+                } else {
+                    diag_emit(DIAG_ERROR, t->array_type.len_expr->loc, "array length must be a positive integer");
+                }
+            }
+        }
+        
         if (resolved_elem != t->array_type.elem_type) {
-            Type* new_array = type_array(resolved_elem, t->array_type.len);
+            Type* new_array = type_array(resolved_elem, resolved_len);
+            new_array->array_type.len_expr = t->array_type.len_expr;
             return new_array;
         }
         return t;
@@ -1347,20 +1379,6 @@ static Type* resolve_type(Type* t, Scope* sc) {
 
     return t;
 }
-
-static AstNode* substitute_params_in_expr(
-    AstNode*  expr,
-    Param*    params,
-    int       param_count,
-    AstNode** args,
-    int       arg_count,
-    Location  loc
-);
-static bool  eval_const_expr(AstNode* expr, int64_t* out_val);
-static bool  eval_const_expr_with_scope(AstNode* expr, int64_t* out_val, Scope* sc);
-static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint);
-static void  check_stmt(AstNode* s, Scope* sc, AstNode* fn);
-static bool  check_annotation(AstNode* annot, AstNode* target);
 
 static Type* check_expr(AstNode* e, Scope* sc) {
     return check_expr_hint(e, sc, NULL);
@@ -1706,13 +1724,51 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     );
                     int64_t constraint_value = 0;
 
-                    if (!eval_const_expr_with_scope(eval_expr, &constraint_value, sc)) {
-                        diag_emit(
-                            DIAG_ERROR,
-                            e->loc,
-                            "param constraint #%zu failed to evaluate to a constant at call site",
-                            ci + 1
-                        );
+                    Scope* global_sc = sc;
+                    while (global_sc && global_sc->parent) {
+                        global_sc = global_sc->parent;
+                    }
+
+                    if (!eval_const_expr_with_scope(eval_expr, &constraint_value, global_sc)) {
+                        AstNode* node = eval_expr;
+                        AstNode* undefined_node = NULL;
+                        
+                        while (node) {
+                            if (node->kind == AST_IDENT) {
+                                undefined_node = node;
+                                break;
+                            }
+                            if (node->kind == AST_BINOP) {
+                                if (node->lhs && node->lhs->kind == AST_IDENT) {
+                                    undefined_node = node->lhs;
+                                    break;
+                                } else if (node->rhs && node->rhs->kind == AST_IDENT) {
+                                    undefined_node = node->rhs;
+                                    break;
+                                }
+                                node = node->lhs ? node->lhs : node->rhs;
+                            } else if (node->kind == AST_UNOP) {
+                                node = node->operand;
+                            } else {
+                                break;
+                            }
+                        }
+                        
+                        if (undefined_node && undefined_node->kind == AST_IDENT) {
+                            diag_emit(
+                                DIAG_ERROR,
+                                undefined_node->loc,
+                                "undefined symbol '%s' in param constraint (not a parameter or constant)",
+                                undefined_node->ident
+                            );
+                        } else {
+                            diag_emit(
+                                DIAG_ERROR,
+                                constraint_expr->loc,
+                                "param constraint #%zu contains invalid expression",
+                                ci + 1
+                            );
+                        }
                         continue;
                     }
 
@@ -2166,13 +2222,8 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
                     break;
 
                 case UOP_ADDR: {
-                    if (t && t->kind == TYPE_ARRAY) {
-                        e->type = type_ptr(t->array_type.elem_type, false, false);
-                    } else {
-                        e->type = type_ptr(t, false, false);
-                    }
+                    e->type = type_ptr(t, false, false);
                     break;
-                    ;
                 }
 
                 case UOP_NOT:
@@ -2239,19 +2290,49 @@ static Type* check_expr_hint(AstNode* e, Scope* sc, Type* hint) {
             Type* array_type = check_expr(e->array, sc);
             Type* index_type = check_expr(e->index, sc);
 
-            if (!is_integer(index_type)) {
+            bool is_range_index = e->index->kind == AST_RANGE;
+
+            if (!is_range_index && !is_integer(index_type)) {
                 char s[64];
                 diag_emit(
                     DIAG_ERROR, e->index->loc, "array index must be integer, got %s", type_str(index_type, s, sizeof(s))
                 );
             }
 
+            if (is_range_index && e->index->range_start->kind == AST_INT_LIT && e->index->range_end->kind == AST_INT_LIT) {
+                bool is_empty = (e->index->range_kind == RANGE_END_EXCLUSIVE)
+                              ? (e->index->range_start->ival >= e->index->range_end->ival)
+                              : (e->index->range_start->ival > e->index->range_end->ival);
+                if (is_empty) {
+                    const char* range_op = (e->index->range_kind == RANGE_END_EXCLUSIVE) ? "..<" : "..";
+                    diag_emit(
+                        DIAG_ERROR,
+                        e->index->loc,
+                        "range %lld%s%lld is empty (start %s end)",
+                        e->index->range_start->ival,
+                        range_op,
+                        e->index->range_end->ival,
+                        (e->index->range_kind == RANGE_END_EXCLUSIVE) ? ">=" : ">"
+                    );
+                }
+            }
+
             if (is_error_type(array_type)) {
                 e->type = ERROR_TYPE;
             } else if (array_type && array_type->kind == TYPE_ARRAY) {
-                e->type = resolve_type(array_type->array_type.elem_type, sc);
+                Type* elem_type = resolve_type(array_type->array_type.elem_type, sc);
+                if (is_range_index) {
+                    e->type = type_ptr(elem_type, true, false);
+                } else {
+                    e->type = elem_type;
+                }
             } else if (array_type && array_type->kind == TYPE_PTR) {
-                e->type = resolve_type(array_type->ptr_type.elem_type, sc);
+                Type* elem_type = resolve_type(array_type->ptr_type.elem_type, sc);
+                if (is_range_index) {
+                    e->type = type_ptr(elem_type, true, false);
+                } else {
+                    e->type = elem_type;
+                }
             } else {
                 char s[64];
                 diag_emit(
@@ -3204,8 +3285,18 @@ static bool is_param_constraint_expr(AstNode* expr, AstNode* func_decl) {
         case AST_NULLPTR:
         case AST_TYPE_LIT:
             return true;
-        case AST_IDENT:
+        case AST_IDENT: {
+            /* TODO: actually validate them */
+            if (func_decl && (func_decl->kind == AST_FUNC_DECL || func_decl->kind == AST_EXTERN_DECL)) {
+                for (int i = 0; i < func_decl->param_count; i++) {
+                    if (func_decl->params[i].name && strcmp(func_decl->params[i].name, expr->ident) == 0) {
+                        return true;
+                    }
+                }
+                return true;
+            }
             return true;
+        }
         case AST_CAST:
             return is_param_constraint_expr(expr->cast_expr, func_decl);
         case AST_UNOP:
@@ -3457,7 +3548,8 @@ static bool eval_const_expr_with_scope(AstNode* expr, int64_t* out_val, Scope* s
     if (expr->kind == AST_IDENT) {
         if (sc) {
             SymbolEntry* sym = scope_lookup(sc, expr->ident);
-            if (sym && sym->decl && sym->decl->kind == AST_VAR_DECL && sym->decl->init) {
+            if (sym && sym->decl && sym->decl->init && 
+                (sym->decl->kind == AST_VAR_DECL || sym->decl->kind == AST_CONST_DECL)) {
                 return eval_const_expr_with_scope(sym->decl->init, out_val, sc);
             }
         }
@@ -4213,9 +4305,6 @@ static void convert_stmt_type_idents(AstNode* stmt, Scope* scope) {
             break;
     }
 }
-
-static AstNode* preprocess_expr(AstNode* expr, Scope* scope);
-static AstNode* preprocess_stmt(AstNode* stmt, Scope* scope);
 
 static AstNode* preprocess_expr(AstNode* expr, Scope* scope) {
     if (!expr)

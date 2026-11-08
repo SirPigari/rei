@@ -27,6 +27,8 @@ typedef enum {
     TYPE_UNSUPPORTED,
 } TypeKind;
 
+typedef struct AstNode AstNode;
+
 typedef struct Type Type;
 typedef struct Type {
     TypeKind kind;
@@ -51,8 +53,9 @@ typedef struct Type {
             Type*    elem_type;
         } ptr_type;
         struct {
-            Type*  elem_type;
-            size_t len;
+            Type*    elem_type;
+            size_t   len;      /* resolved length (0 if unresolved) */
+            AstNode* len_expr; /* expression for array length (evaluated at compile time) */
         } array_type;
         struct {
             char* name;
@@ -66,6 +69,7 @@ Type* type_void(void);
 Type* type_never(void);
 Type* type_ptr(Type* elem, bool is_fat, bool non_null);
 Type* type_array(Type* elem, size_t len);
+Type* type_array_with_expr(Type* elem, AstNode* len_expr);
 Type* type_abstract_int(void);
 Type* type_abstract_float(void);
 Type* type_abstract_ieee_float(void);
@@ -192,8 +196,6 @@ typedef enum {
 
 #define FUNC_IS_FLAG(fn, flag)  ((fn)->flags & (flag))
 #define FUNC_SET_FLAG(fn, flag) ((fn)->flags |= (flag))
-
-typedef struct AstNode AstNode;
 
 typedef struct {
     char*    name;          /* NULL = unnamed */

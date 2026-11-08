@@ -83,6 +83,16 @@ Type* type_array(Type* elem, size_t len) {
     t->kind                 = TYPE_ARRAY;
     t->array_type.elem_type = elem;
     t->array_type.len       = len;
+    t->array_type.len_expr  = NULL;
+    return t;
+}
+
+Type* type_array_with_expr(Type* elem, AstNode* len_expr) {
+    Type* t                 = calloc(1, sizeof(*t));
+    t->kind                 = TYPE_ARRAY;
+    t->array_type.elem_type = elem;
+    t->array_type.len       = 0;
+    t->array_type.len_expr  = len_expr;
     return t;
 }
 
@@ -178,14 +188,16 @@ int type_bytes(Type* t) {
         case TYPE_INT:
         case TYPE_FLOAT:
             if (t->bits) {
-                return (t->bits + 7) / 8; /* Round up to nearest byte */
+                return (t->bits + 7) / 8;
             } else {
                 return t->kind == TYPE_FLOAT ? 4 : 8;
             }
         case TYPE_PTR:
             return t->ptr_type.is_fat ? 16 : 8;
         case TYPE_ARRAY:
-            return 8;
+            if (t->array_type.len == 0)
+                return 8;
+            return type_bytes(t->array_type.elem_type) * t->array_type.len;
         default:
             return 8;
     }
@@ -353,6 +365,13 @@ static void dump_expr(AstNode* n, int ind) {
             dump_expr(n->member_value, ind);
             printf(".%s", n->member_name);
             break;
+        case AST_RANGE:
+            dump_expr(n->range_start, ind);
+            printf("..");
+            if (n->range_kind == RANGE_END_EXCLUSIVE)
+                printf("<");
+            dump_expr(n->range_end, ind);
+            break;
         default:
             printf("?expr(%d)", n->kind);
             break;
@@ -396,6 +415,14 @@ static void dump_stmt(AstNode* s, int ind) {
             dump_expr(s->while_cond, 0);
             printf(") ");
             dump_stmt(s->while_body, ind);
+            break;
+        case AST_FOR_STMT:
+            printf("%*sfor ", ind, "");
+            dump_expr(s->for_val, ind);
+            printf(": ");
+            dump_expr(s->for_iterable, ind);
+            printf(" ");
+            dump_stmt(s->for_body, ind);
             break;
         case AST_ASSIGN: {
             printf("%*s", ind, "");

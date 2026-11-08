@@ -23,6 +23,7 @@ static bool is_type_start(TokenKind kind) {
     return kind == TK_IDENT || kind == TK_STAR || kind == TK_STARSTAR || kind == TK_LBRACKET || kind == TK_BANG;
 }
 
+static AstNode*       parse_expr(Lexer* l);
 static AnnotationType parse_annotation_name(const char* name_str, size_t name_len);
 
 static Type* parse_type(Lexer* l) {
@@ -65,11 +66,9 @@ static Type* parse_type(Lexer* l) {
         Type* elem = parse_type(l);
         if (lexer_peek(l).kind == TK_SEMI) {
             lexer_next(l);
-            Token len_tok = expect(l, TK_INT_LIT);
-            if (len_tok.ival <= 0)
-                diag_emit(DIAG_ERROR, len_tok.loc, "array length must be a positive integer");
+            AstNode* len_expr = parse_expr(l);
             expect(l, TK_RBRACKET);
-            return type_array(elem, (size_t)len_tok.ival);
+            return type_array_with_expr(elem, len_expr);
         }
         expect(l, TK_RBRACKET);
         return type_array(elem, 0);
@@ -78,9 +77,6 @@ static Type* parse_type(Lexer* l) {
     Token t = expect(l, TK_IDENT);
     return type_ident(tok_str(t));
 }
-
-static AstNode*       parse_expr(Lexer* l);
-static AnnotationType parse_annotation_name(const char* name_str, size_t name_len);
 
 static AstNode* parse_primary(Lexer* l) {
     Token    t   = lexer_peek(l);

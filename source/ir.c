@@ -361,7 +361,15 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                 int reg_idx = 0;
                 for (int pi = 0; pi < idx; pi++) {
                     Type* pt = f->params[pi].type;
-                    reg_idx += (pt && pt->kind == TYPE_PTR && pt->ptr_type.is_fat) ? 2 : 1;
+                    if (pt && pt->kind == TYPE_ARRAY) {
+                        int array_bytes = type_bytes(pt);
+                        int array_slots = (array_bytes + 7) / 8;
+                        reg_idx += array_slots;
+                    } else if (pt && pt->kind == TYPE_PTR && pt->ptr_type.is_fat) {
+                        reg_idx += 2;
+                    } else {
+                        reg_idx += 1;
+                    }
                 }
                 IrInstr* i   = emit(f);
                 i->op        = IR_PARAM;
@@ -516,43 +524,133 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
             return i->dst;
         }
         case AST_INDEX: {
+            bool is_range_index = e->index->kind == AST_RANGE;
+
             IrVal array = lower_expr(m, f, e->array, vars);
-            IrVal index = lower_expr(m, f, e->index, vars);
-
-            if (array == IR_NO_VAL || index == IR_NO_VAL)
-                return IR_NO_VAL;
-
             if (array == IR_NO_VAL)
                 return IR_NO_VAL;
 
-            bool was_fat = e->array->type && e->array->type->kind == TYPE_PTR && e->array->type->ptr_type.is_fat;
-            if (was_fat) {
-                IrInstr* fp = emit(f);
-                fp->op      = IR_FAT_PTR;
-                fp->dst     = next_val(f);
-                fp->type    = type_ptr(e->array->type->ptr_type.elem_type, false, false);
-                fp->src     = array;
-                array       = fp->dst;
+            if (is_range_index) {
+                IrVal start_idx = lower_expr(m, f, e->index->range_start, vars);
+                IrVal end_idx   = lower_expr(m, f, e->index->range_end, vars);
+
+                if (start_idx == IR_NO_VAL || end_idx == IR_NO_VAL)
+                    return IR_NO_VAL;
+
+                Type* i64_type = type_number(TYPE_INT, 64, false);
+
+                start_idx = emit_cast(f, start_idx, e->index->range_start->type, i64_type);
+                end_idx   = emit_cast(f, end_idx, e->index->range_end->type, i64_type);
+
+                bool was_fat = e->array->type && e->array->type->kind == TYPE_PTR && e->array->type->ptr_type.is_fat;
+                if (was_fat) {
+                    IrInstr* fp = emit(f);
+                    fp->op      = IR_FAT_PTR;
+                    fp->dst     = next_val(f);
+                    fp->type    = type_ptr(e->array->type->ptr_type.elem_type, false, false);
+                    fp->src     = array;
+                    array       = fp->dst;
+                }
+
+                Type* elem_type = (e->type && e->type->kind == TYPE_PTR) ? e->type->ptr_type.elem_type : type_void();
+                int   elem_size = type_bytes(elem_type);
+
+                IrInstr* start_gep = emit(f);
+                start_gep->op      = IR_GEP;
+                start_gep->dst     = next_val(f);
+                start_gep->type    = type_ptr(elem_type, false, false);
+                start_gep->gep_base      = array;
+                start_gep->gep_idx       = start_idx;
+                start_gep->gep_scale     = elem_size;
+                start_gep->gep_base_type = was_fat ? type_ptr(elem_type, false, false) : e->array->type;
+
+                IrVal length = next_val(f);
+                IrInstr* len_binop = emit(f);
+                len_binop->op      = IR_BINOP;
+                len_binop->dst     = length;
+                len_binop->bop     = OP_SUB;
+                len_binop->blhs    = end_idx;
+                len_binop->brhs    = start_idx;
+                len_binop->type    = i64_type;
+                len_binop->lhs_type = i64_type;
+                len_binop->rhs_type = i64_type;
+
+                if (e->index->range_kind == RANGE_INCLUSIVE) {
+                    IrInstr* one_const = emit(f);
+                    one_const->op      = IR_CONST_INT;
+                    one_const->dst     = next_val(f);
+                    one_const->type    = i64_type;
+                    one_const->ival    = 1;
+
+                    IrInstr* len_plus_one = emit(f);
+                    len_plus_one->op      = IR_BINOP;
+                    len_plus_one->dst     = next_val(f);
+                    len_plus_one->bop     = OP_ADD;
+                    len_plus_one->blhs    = length;
+                    len_plus_one->brhs    = one_const->dst;
+                    len_plus_one->type    = i64_type;
+                    len_plus_one->lhs_type = i64_type;
+                    len_plus_one->rhs_type = i64_type;
+
+                    length = len_plus_one->dst;
+                }
+
+                IrInstr* fat_ptr = emit(f);
+                fat_ptr->op      = IR_ALLOCA;
+                fat_ptr->dst     = next_val(f);
+                fat_ptr->type    = e->type;
+                fat_ptr->alloca_slots = 2;
+
+                IrInstr* store_ptr = emit(f);
+                store_ptr->op       = IR_STORE;
+                store_ptr->dst      = IR_NO_VAL;
+                store_ptr->type     = type_ptr(elem_type, false, false);
+                store_ptr->store_ptr = fat_ptr->dst;
+                store_ptr->store_val = start_gep->dst;
+
+                IrInstr* store_len = emit(f);
+                store_len->op      = IR_FAT_SET_LEN;
+                store_len->dst     = IR_NO_VAL;
+                store_len->type    = i64_type;
+                store_len->store_ptr = fat_ptr->dst;
+                store_len->store_val = length;
+
+                return fat_ptr->dst;
+            } else {
+                IrVal index = lower_expr(m, f, e->index, vars);
+
+                if (index == IR_NO_VAL)
+                    return IR_NO_VAL;
+
+                bool was_fat = e->array->type && e->array->type->kind == TYPE_PTR && e->array->type->ptr_type.is_fat;
+                if (was_fat) {
+                    IrInstr* fp = emit(f);
+                    fp->op      = IR_FAT_PTR;
+                    fp->dst     = next_val(f);
+                    fp->type    = type_ptr(e->array->type->ptr_type.elem_type, false, false);
+                    fp->src     = array;
+                    array       = fp->dst;
+                }
+
+                int scale = e->type ? type_bytes(e->type) : 8;
+
+                IrInstr* gep       = emit(f);
+                gep->op            = IR_GEP;
+                gep->dst           = next_val(f);
+                gep->type          = type_ptr(e->type, false, false);
+                gep->gep_base      = array;
+                gep->gep_idx       = index;
+                gep->gep_scale     = scale;
+                gep->gep_base_type = was_fat ? type_ptr(e->array->type->ptr_type.elem_type, false, false) : e->array->type;
+
+                IrInstr* ld  = emit(f);
+                ld->op       = IR_LOAD;
+                ld->dst      = next_val(f);
+                ld->type     = e->type;
+                ld->load_ptr = gep->dst;
+
+                return ld->dst;
             }
-
-            int scale = e->type ? type_bytes(e->type) : 8;
-
-            IrInstr* gep       = emit(f);
-            gep->op            = IR_GEP;
-            gep->dst           = next_val(f);
-            gep->type          = type_ptr(e->type, false, false);
-            gep->gep_base      = array;
-            gep->gep_idx       = index;
-            gep->gep_scale     = scale;
-            gep->gep_base_type = was_fat ? type_ptr(e->array->type->ptr_type.elem_type, false, false) : e->array->type;
-
-            IrInstr* ld  = emit(f);
-            ld->op       = IR_LOAD;
-            ld->dst      = next_val(f);
-            ld->type     = e->type;
-            ld->load_ptr = gep->dst;
-
-            return ld->dst;
         }
         case AST_MEMBER: {
             Type* val_type   = e->member_value->type;
@@ -910,6 +1008,18 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                     if (e->operand->kind != AST_IDENT)
                         ICE("& operand must be an identifier (for now)");
                     const char* name = e->operand->ident;
+                    
+                    if (e->operand->type && e->operand->type->kind == TYPE_ARRAY) {
+                        if (vars) {
+                            VarSlot* slot = ht_find(vars, name);
+                            if (slot && slot->ptr != IR_NO_VAL) {
+                                return slot->ptr;
+                            }
+                        }
+                        ICE("& on array: no pointer slot found");
+                        return IR_NO_VAL;
+                    }
+                    
                     if (vars) {
                         VarSlot* slot = ht_find(vars, name);
                         if (slot && slot->ptr == IR_NO_VAL) {
@@ -933,7 +1043,15 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                         int   reg_idx = 0;
                         for (int pi = 0; pi < pidx; pi++) {
                             Type* pt = f->params[pi].type;
-                            reg_idx += (pt && pt->kind == TYPE_PTR && pt->ptr_type.is_fat) ? 2 : 1;
+                            if (pt && pt->kind == TYPE_ARRAY) {
+                                int array_bytes = type_bytes(pt);
+                                int array_slots = (array_bytes + 7) / 8;
+                                reg_idx += array_slots;
+                            } else if (pt && pt->kind == TYPE_PTR && pt->ptr_type.is_fat) {
+                                reg_idx += 2;
+                            } else {
+                                reg_idx += 1;
+                            }
                         }
                         IrInstr* par   = emit(f);
                         par->op        = IR_PARAM;
@@ -959,6 +1077,10 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
                         chk->op      = IR_NULL_CHECK;
                         chk->dst     = IR_NO_VAL;
                         chk->src     = ptr;
+                    }
+
+                    if (e->type && e->type->kind == TYPE_ARRAY) {
+                        return ptr;
                     }
 
                     IrInstr* ld  = emit(f);
@@ -1064,6 +1186,9 @@ static IrVal lower_expr(IrModule* m, IrFunc* f, AstNode* e, VarMap* vars) {
             return src;
         }
         case AST_TYPE_LIT:
+            return IR_NO_VAL;
+        case AST_RANGE:
+            ICE("range expression in non-index context");
             return IR_NO_VAL;
         default:
             ICE("unexpected node in expression context");
@@ -1994,7 +2119,29 @@ IrModule* ir_lower(Module* ast) {
             int reg_idx = 0;
             for (int pi = 0; pi < f->param_count; pi++) {
                 Type* ptype = f->params[pi].type;
-                if (ptype && ptype->kind == TYPE_PTR && ptype->ptr_type.is_fat) {
+                if (ptype && ptype->kind == TYPE_ARRAY) {
+                    int array_bytes = type_bytes(ptype);
+                    int array_slots = (array_bytes + 7) / 8;
+                    
+                    IrInstr* al      = emit(f);
+                    al->op           = IR_ALLOCA;
+                    al->dst          = next_val(f);
+                    al->type         = ptype;
+                    al->alloca_slots = array_slots;
+
+                    IrInstr* pp   = emit(f);
+                    pp->op        = IR_PARAM;
+                    pp->dst       = al->dst;
+                    pp->type      = ptype;
+                    pp->param_idx = reg_idx;
+
+                    VarSlot* vs = ht_put(&var_map, f->params[pi].name);
+                    vs->ptr     = al->dst;
+                    vs->val     = IR_NO_VAL;
+                    vs->ast     = NULL;
+
+                    reg_idx += array_slots;
+                } else if (ptype && ptype->kind == TYPE_PTR && ptype->ptr_type.is_fat) {
                     IrInstr* al      = emit(f);
                     al->op           = IR_ALLOCA;
                     al->dst          = next_val(f);

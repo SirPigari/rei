@@ -560,7 +560,21 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
                 bool is_signed = type_is_signed(i->type);
                 bool is_float  = i->type && i->type->kind == TYPE_FLOAT;
 
-                if (i->type && i->type->kind == TYPE_PTR && i->type->ptr_type.is_fat) {
+                if (i->type && i->type->kind == TYPE_ARRAY) {
+                    int array_slots = (bytes + 7) / 8;
+                    int slot_offset = slot_of(&slotmap, i->dst);
+                    int param_idx = i->param_idx;
+                    
+                    for (int s = 0; s < array_slots; s++) {
+                        if (param_idx + s < MAX_ARGREGS) {
+                            L(out, "mov rax, %s", ARGREGS[param_idx + s]);
+                        } else {
+                            int stack_off = 16 + (param_idx + s - MAX_ARGREGS) * REGISTER_SIZE;
+                            L(out, "mov rax, qword [%s + %d]", "rbp", stack_off);
+                        }
+                        L(out, "mov qword %s, rax", mem(slot_offset + s * 8, buf));
+                    }
+                } else if (i->type && i->type->kind == TYPE_PTR && i->type->ptr_type.is_fat) {
                     int slot_offset = slot_of(&slotmap, i->dst);
                     L(out, "mov rax, %s", ARGREGS[i->param_idx]);
                     emit_store_slot(out, REGISTER_SIZE, mem(slot_offset, buf));
@@ -622,7 +636,15 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
                 for (int a = 0; a < i->call.arg_count; a++) {
                     Type* arg_type = i->call.arg_types ? i->call.arg_types[a] : NULL;
 
-                    if (arg_type && arg_type->kind == TYPE_PTR && arg_type->ptr_type.is_fat) {
+                    if (arg_type && arg_type->kind == TYPE_ARRAY) {
+                        int array_bytes = type_bytes(arg_type);
+                        int array_slots = (array_bytes + 7) / 8;
+                        int regs_available = MAX_ARGREGS - reg_idx;
+                        if (array_slots > regs_available) {
+                            stack_arg_count += (array_slots - regs_available);
+                        }
+                        reg_idx += array_slots;
+                    } else if (arg_type && arg_type->kind == TYPE_PTR && arg_type->ptr_type.is_fat) {
                         if (reg_idx + 1 >= MAX_ARGREGS) {
                             stack_arg_count += 2;
                         }
@@ -649,12 +671,31 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
 
                 reg_idx          = 0;
                 xmm_idx          = 0;
-                int stack_offset = stack_space;
+                int stack_offset = 0;
 
                 for (int a = 0; a < i->call.arg_count; a++) {
                     Type* arg_type = i->call.arg_types ? i->call.arg_types[a] : NULL;
 
-                    if (arg_type && arg_type->kind == TYPE_PTR && arg_type->ptr_type.is_fat) {
+                    if (arg_type && arg_type->kind == TYPE_ARRAY) {
+                        int array_bytes = type_bytes(arg_type);
+                        int array_slots = (array_bytes + 7) / 8;
+                        int base_slot = slot_of(&slotmap, i->call.args[a]);
+                        
+                        int regs_available = MAX_ARGREGS - reg_idx;
+                        int slots_in_regs = (array_slots < regs_available) ? array_slots : regs_available;
+                        int slots_on_stack = array_slots - slots_in_regs;
+                        
+                        for (int s = 0; s < slots_in_regs; s++) {
+                            L(out, "mov %s, qword %s", ARGREGS[reg_idx + s], mem(base_slot + s * 8, buf));
+                        }
+                        reg_idx += slots_in_regs;
+
+                        for (int s = 0; s < slots_on_stack; s++) {
+                            L(out, "mov rax, qword %s", mem(base_slot + (slots_in_regs + s) * 8, buf));
+                            L(out, "mov qword [rsp + %d], rax", stack_offset);
+                            stack_offset += 8;
+                        }
+                    } else if (arg_type && arg_type->kind == TYPE_PTR && arg_type->ptr_type.is_fat) {
                         int slot_offset = slot_of(&slotmap, i->call.args[a]);
                         if (reg_idx + 1 < MAX_ARGREGS) {
                             L(out, "mov %s, qword %s", ARGREGS[reg_idx], mem(slot_offset, buf));
@@ -662,10 +703,10 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
                             reg_idx += 2;
                         } else {
                             L(out, "mov rax, qword %s", mem(slot_offset, buf));
-                            L(out, "mov qword [rsp + %d], rax", stack_offset - 8);
+                            L(out, "mov qword [rsp + %d], rax", stack_offset);
                             L(out, "mov rcx, qword %s", mem(slot_offset - 8, buf2));
-                            L(out, "mov qword [rsp + %d], rcx", stack_offset - 16);
-                            stack_offset -= 16;
+                            L(out, "mov qword [rsp + %d], rcx", stack_offset + 8);
+                            stack_offset += 16;
                             reg_idx += 2;
                         }
                     } else if (arg_type && arg_type->kind == TYPE_FLOAT) {
@@ -695,8 +736,21 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
                                     L(out, "mov rax, qword %s", mem(arg_slot, buf));
                                 }
                             }
-                            L(out, "mov qword [rsp + %d], rax", stack_offset - 8);
-                            stack_offset -= 8;
+                            L(out, "mov qword [rsp + %d], rax", stack_offset);
+                            stack_offset += 8;
+                        }
+                    } else if (arg_type && arg_type->kind == TYPE_PTR && 
+                               arg_type->ptr_type.elem_type && arg_type->ptr_type.elem_type->kind == TYPE_ARRAY &&
+                               is_alloca(&slotmap, i->call.args[a])) {
+                        int arg_slot = slot_of(&slotmap, i->call.args[a]);
+                        if (reg_idx < MAX_ARGREGS) {
+                            L(out, "lea %s, %s", ARGREGS[reg_idx], mem(arg_slot, buf));
+                            reg_idx++;
+                        } else {
+                            L(out, "lea rax, %s", mem(arg_slot, buf));
+                            L(out, "mov qword [rsp + %d], rax", stack_offset);
+                            stack_offset += 8;
+                            reg_idx++;
                         }
                     } else {
                         int        arg_bytes  = arg_type ? type_bytes(arg_type) : 8;
@@ -739,8 +793,8 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
                                     out, &slotmap, i->call.args[a], arg_bytes, arg_signed, mem(arg_slot, buf)
                                 );
                             }
-                            L(out, "mov qword [rsp + %d], rax", stack_offset - 8);
-                            stack_offset -= 8;
+                            L(out, "mov qword [rsp + %d], rax", stack_offset);
+                            stack_offset += 8;
                             reg_idx++;
                         }
                     }
@@ -1610,6 +1664,13 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
                 int  idx_off     = slot_of(&slotmap, i->gep_idx);
                 bool base_is_ptr = i->gep_base_type && i->gep_base_type->kind == TYPE_PTR;
 
+                if (!base_is_ptr && !is_alloca(&slotmap, i->gep_base)) {
+                    Type* base_val_type = val_type(&slotmap, i->gep_base);
+                    if (base_val_type && base_val_type->kind == TYPE_PTR) {
+                        base_is_ptr = true;
+                    }
+                }
+
                 Type* idx_type   = val_type(&slotmap, i->gep_idx);
                 int   idx_bytes  = idx_type ? type_bytes(idx_type) : 8;
                 bool  idx_signed = type_is_signed(idx_type);
@@ -1665,8 +1726,10 @@ static void emit_func(IrFunc* f, SymMap* sm, FILE* out, IrModule* m) {
             }
 
             case IR_FAT_SET_LEN: {
-                int fat_slot = slot_of(&slotmap, i->store_ptr);
-                emit_load_or_const_to(out, &slotmap, i->store_val, "rax", 8, false, "");
+                int fat_slot   = slot_of(&slotmap, i->store_ptr);
+                int val_slot   = slot_of(&slotmap, i->store_val);
+                char val_mem[256];
+                emit_load_or_const_to(out, &slotmap, i->store_val, "rax", 8, false, mem(val_slot, val_mem));
                 L(out, "mov qword %s, rax", mem(fat_slot - 8, buf2));
                 break;
             }
